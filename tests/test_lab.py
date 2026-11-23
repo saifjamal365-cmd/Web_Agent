@@ -342,3 +342,28 @@ def test_a_filter_box_that_needs_go_says_so(browser, lab):
     assert go.startswith("e")
     browser.click(go)
     assert "ram=16" in browser.url
+
+
+def test_an_empty_search_result_is_reported_as_the_answer(browser, lab):
+    # Live Gmail run: "No messages matched your search" was not taken as an answer; the agent retyped the search.
+    browser.goto(lab + "/megashop.html")
+    assert browser._no_results_line() == ""          # a normal results page does not trigger it
+    lines = browser._body_lines()
+    browser.page.evaluate("() => document.body.insertAdjacentHTML('beforeend', "
+                          "'<p>No messages matched your search. Try using search options.</p>')")
+    out = browser._after_action(browser.url, len(browser.pages), lines)
+    assert "No messages matched your search" in out and "that is the answer: none" in out
+
+
+def test_extract_that_finds_nothing_suggests_asking_for_the_rows_plainly(browser, lab):
+    class Reply:
+        text, tokens = "Nothing found.", 10
+
+    class FakeLLM:
+        def chat(self, messages, **kw):
+            return Reply()
+    browser.goto(lab + "/megashop.html")
+    r = T.run("extract", T.validate("extract", {"question": "every important email: sender"}), browser, FakeLLM(),
+              browser.snapshot())
+    assert "Nothing found" in r.text and "ask again in plain words" in r.text
+    assert "already filtered" in T.EXTRACT_PROMPT

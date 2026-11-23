@@ -694,9 +694,29 @@ class BrowserSession:
                 notes.append("The page changed: the same text is now in a different order.")
             else:
                 notes.append("No visible text changed on the page.")
+        empty = self._no_results_line()
+        if empty:
+            # Live run (Gmail): "No messages matched your search" was not seen as an answer, and the agent retyped
+            # the same search four times until the time ran out.
+            notes.append(f'The page says: "{empty}". If your search words were right, that is the answer: none. '
+                         "Do not retype the same search in other forms.")
         if self.dialogs:
             notes.append("A browser dialog was dismissed: " + self.dialogs.pop())
         return " ".join(notes) or "Done."
+
+    NO_RESULTS = re.compile(r"\b(no (messages|results|items|products|matches|emails|records|conversations) "
+                            r"(matched|found|match)|did not match any|no results (for|found)|"
+                            r"(found|showing|there are) 0 (results|items|matches)|0 results (for|found))\b", re.I)
+
+    def _no_results_line(self) -> str:
+        try:
+            lines = self._body_lines()
+        except Exception:
+            return ""
+        for line in lines:
+            if len(line) < 220 and self.NO_RESULTS.search(line):
+                return line.strip()[:200]
+        return ""
 
     def _drop_browser_pages(self) -> None:
         """Edge opens its own "Downloads" tab (edge://downloads-hub) after a download: ignore it and stay on the
@@ -988,6 +1008,10 @@ class BrowserSession:
                     continue
                 raise BrowserError(f"Could not open {url}: {str(exc).splitlines()[0][:200]}") from exc
         self.settle()
+        empty = self._no_results_line()
+        if empty:
+            return (f'Opened {self.url} The page says: "{empty}". If your search words were right, that is the '
+                    "answer: none. Do not retype the same search in other forms.")
         return f"Opened {self.url}"
 
     def click(self, ref: str) -> str:

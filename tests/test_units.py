@@ -353,3 +353,56 @@ def test_done_so_far_keeps_real_actions_from_all_steps():
     assert "DONE SO FAR" in _render(state, "") and "Slim 5" in _render(state, "")
     refused = {"task": "t", "steps": [{"n": 1, "tool": "click", "ok": False, "result": "Added to Cart: X"}]}
     assert _done_so_far(refused) == []
+
+
+def test_a_malformed_tool_call_is_rebuilt_from_what_the_model_wrote():
+    from webagent.llm import recover_tool_call
+    names = {"find_in_page", "click", "finish"}
+    c = recover_tool_call('{"name": "find_in_page", "arguments": {"words": "Select all"}}', names)
+    assert c.name == "find_in_page" and c.args == {"words": "Select all"}
+    c = recover_tool_call('<|channel|>commentary to=functions.click <|constrain|>json<|message|>{"ref": "e22"}', names)
+    assert c.name == "click" and c.args == {"ref": "e22"}
+    c = recover_tool_call('{"name": "click", "arguments": "{\\"ref\\": \\"e5\\"}"}', names)
+    assert c.args == {"ref": "e5"}
+    assert recover_tool_call('{"name": "delete_everything", "arguments": {}}', names) is None   # unknown tool
+    assert recover_tool_call("I will click the button", names) is None
+
+
+def test_groq_bad_tool_call_is_recovered_or_retried_only_once(monkeypatch):
+    import webagent.llm as L
+    monkeypatch.setattr(L.time, "sleep", lambda s: None)
+
+    class BadCall(Exception):
+        status_code = 400
+
+        def __init__(self, gen):
+            super().__init__("Error code: 400 - tool_use_failed")
+            self.body = {"error": {"code": "tool_use_failed", "failed_generation": gen}}
+
+    class Completions:
+        calls = 0
+        gen = ""
+
+        def create(self, **kw):
+            Completions.calls += 1
+            raise BadCall(Completions.gen)
+
+    llm = L.GroqLLM(api_key="test-key")
+    llm.client = type("C", (), {"chat": type("Ch", (), {"completions": Completions()})()})()
+    tools = [{"type": "function", "function": {"name": "finish", "parameters": {}}}]
+    Completions.gen = '{"name": "finish", "arguments": {"answer": "done"}}'
+    reply = llm.chat([{"role": "user", "content": "x"}], tools=tools)
+    assert reply.tool_calls[0].name == "finish" and Completions.calls == 1
+    Completions.calls, Completions.gen = 0, "gibberish"
+    with pytest.raises(L.LLMError, match="invalid tool call"):
+        llm.chat([{"role": "user", "content": "x"}], tools=tools)
+    assert Completions.calls == 2                    # not 5 backed-off attempts
+
+
+def test_planner_and_checker_do_not_add_requirements_the_person_did_not_state():
+    from webagent.agent import prompts
+    # Live run: "u should tell from where the important emails just" was read as "today's emails"; the checker then
+    # rejected a correct list of senders and the agent searched for today's mail until the time ran out.
+    assert 'never add a requirement they did not state' in prompts.PLAN and '"just"' in prompts.PLAN
+    assert "Never add a requirement the person's words do not state" in prompts.CHECK
+    assert "1-50 of\n  many" in prompts.SYSTEM or "of many" in prompts.SYSTEM

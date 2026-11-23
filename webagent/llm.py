@@ -57,6 +57,49 @@ def _friendly(exc: Exception) -> str:
     return f"The model call failed ({name}{' ' + str(status) if status else ''})."
 
 
+def _failed_generation(exc: Exception) -> str:
+    """The text the model wrote when Groq refused its tool call (400 tool_use_failed)."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error", body)
+        if isinstance(err, dict) and err.get("failed_generation"):
+            return str(err["failed_generation"])
+    m = re.search(r"'failed_generation': '(.*?)'(?:,|\})", str(exc), re.S)
+    return m.group(1) if m else ""
+
+
+def recover_tool_call(text: str, tool_names: set[str]) -> ToolCall | None:
+    """Rebuild the tool call the model meant from the text it wrote. gpt-oss sometimes writes the call in its own
+    channel format or wraps it as {"name": ..., "arguments": ...}; a live Gmail run lost 4 steps (and minutes of
+    retries) to such calls."""
+    if not text or not tool_names:
+        return None
+    dec = json.JSONDecoder()
+    objs = []
+    for i, ch in enumerate(text):
+        if ch == "{":
+            try:
+                obj, _ = dec.raw_decode(text[i:])
+            except ValueError:
+                continue
+            if isinstance(obj, dict):
+                objs.append(obj)
+    named = re.search(r"(?:to=)?functions\.(\w+)", text)
+    for obj in objs:
+        name = obj.get("name") or obj.get("tool") or obj.get("function")
+        args = obj.get("arguments", obj.get("parameters", obj.get("args")))
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                args = None
+        if isinstance(name, str) and name in tool_names and isinstance(args, dict):
+            return ToolCall(name=name, args=args)
+    if named and named.group(1) in tool_names and objs:
+        return ToolCall(name=named.group(1), args=objs[0])
+    return None
+
+
 class GroqLLM:
     def __init__(self, api_key: str | None = None, model: str | None = None, retries: int = 4):
         from groq import Groq
@@ -99,10 +142,21 @@ class GroqLLM:
                 last = exc
                 status = getattr(exc, "status_code", None)
                 body = str(exc)
-                # Model wrote a bad tool call: Groq returns 400 tool_use_failed. Retry once more, then give up.
+                bad_call = status == 400 and "tool_use_failed" in body
+                if bad_call:
+                    # Model wrote a bad tool call: rebuild what it meant, else retry only once (the same request
+                    # usually fails the same way; 4 backed-off retries cost about a minute each time).
+                    text = _failed_generation(exc)
+                    names = {t.get("function", {}).get("name") for t in tools or []}
+                    call = recover_tool_call(text, names)
+                    if call:
+                        log.info("Recovered a malformed tool call: %s", call.name)
+                        return Reply(text="", tool_calls=[call], tokens=0)
+                    log.warning("Model wrote an invalid tool call: %s", text[:300].replace("\n", " "))
+                    if attempt >= 1:
+                        break
                 retryable = status in (408, 409, 429, 500, 502, 503, 504) or type(exc).__name__ in (
-                    "APIConnectionError", "APITimeoutError", "RateLimitError", "InternalServerError") or (
-                    status == 400 and "tool_use_failed" in body)
+                    "APIConnectionError", "APITimeoutError", "RateLimitError", "InternalServerError") or bad_call
                 if not retryable or attempt == self.retries:
                     break
                 wait = min(30.0, 2 ** attempt + random.random())

@@ -793,7 +793,10 @@ EXTRACT_PROMPT = (
     "You pull facts out of one web page for a browsing agent. Use ONLY the page text below; never add facts from "
     "memory. Copy names, prices and numbers exactly as the page writes them. For lists (products, results), give "
     "one line per item: name | price | the asked details | the words of its link or button (so the agent can find "
-    "it). Mark a detail the page does not give as 'not shown'. If nothing matches, say so plainly. Be short.")
+    "it). Mark a detail the page does not give as 'not shown'. The page is often already filtered (a label, a "
+    "folder, a search, a category): words in the request that describe the whole list (for example 'important "
+    "emails' on the Important view) are not a test for each item, so list the items the page shows. Say "
+    "'Nothing found' only when the page really has no such items. Be short.")
 
 
 def _extract(browser: BrowserSession, llm: LLM, question: str, hint: str = "", task: str = "") -> ToolResult:
@@ -813,6 +816,9 @@ def _extract(browser: BrowserSession, llm: LLM, question: str, hint: str = "", t
     except LLMError as exc:
         return ToolResult(f"Could not extract: {exc}. Use find_in_page or read_page.")
     answer = (reply.text or "").strip() or "Nothing found."
+    if re.match(r"(?i)\W*(nothing|no (items|results|matches)) (found|match)", answer) and len(answer) < 120:
+        hint += ("\nIf the page does show a list, ask again in plain words for the rows as they appear (for example "
+                 "\"every row in the list: sender, subject, date\"), without describing words the rows may not show.")
     cut = " (the page was long: only its first 40000 characters were used)" if len(text) >= 40000 else ""
     last = browser.last.refs.values() if browser.last and browser.last.url == browser.url else []
     if any(re.fullmatch(r"(next|next page|more results|show more|load more|[›»>])", str(el.get("name") or "").strip(),

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Lab Sheets</title>
+<style>
+  body { font: 14px Arial, sans-serif; margin: 0; }
+  #home { padding: 24px; }
+  #editor { display: none; }
+  .bar { display: flex; gap: 8px; padding: 6px 10px; border-bottom: 1px solid #ccc; align-items: center; }
+  #namebox { width: 70px; } #fx { flex: 1; }
+  canvas { display: block; outline: none; }
+  .tile { display: inline-block; border: 1px solid #ccc; padding: 30px 40px; margin: 10px; cursor: pointer; background: #fafafa; }
+</style></head>
+<body>
+<!-- Like Google Sheets: the cells are drawn on a canvas (no text elements for cells). Typing goes to the grid
+     from the keyboard: Tab moves right, Enter goes to the next row. The Name box jumps to a cell. -->
+<div id="home">
+  <h1>Lab Sheets</h1>
+  <h2>Start a new spreadsheet</h2>
+  <div class="tile" id="blank" role="button" tabindex="0" aria-label="Blank spreadsheet">+ Blank spreadsheet</div>
+  <h2>Recent spreadsheets</h2>
+  <p>Budget 2025 (read only) · Team contacts (read only)</p>
+</div>
+<div id="editor">
+  <div class="bar"><b id="title">Untitled spreadsheet</b> <span id="saved"></span></div>
+  <div class="bar">
+    <input id="namebox" aria-label="Name box" value="A1">
+    <span>fx</span><input id="fx" aria-label="Formula bar">
+  </div>
+  <canvas id="grid" width="820" height="420" tabindex="0"></canvas>
+</div>
+<script src="lab.js"></script>
+<script>
+const COLS = 8, ROWS = 15, CW = 100, RH = 26, HW = 40;
+const cells = Array.from({length: ROWS}, () => Array(COLS).fill(''));
+let r = 0, c = 0, startC = 0, edit = null;
+const cv = document.getElementById('grid'), g = cv.getContext('2d');
+const colName = i => String.fromCharCode(65 + i);
+function draw() {
+  g.clearRect(0, 0, cv.width, cv.height); g.font = '13px Arial'; g.textBaseline = 'middle';
+  for (let i = 0; i < COLS; i++) { g.fillStyle = '#f1f3f4'; g.fillRect(HW + i * CW, 0, CW, RH); g.fillStyle = '#444'; g.fillText(colName(i), HW + i * CW + 45, RH / 2); }
+  for (let j = 0; j < ROWS; j++) {
+    g.fillStyle = '#f1f3f4'; g.fillRect(0, RH + j * RH, HW, RH); g.fillStyle = '#444'; g.fillText(String(j + 1), 12, RH + j * RH + RH / 2);
+    for (let i = 0; i < COLS; i++) {
+      g.strokeStyle = '#ddd'; g.strokeRect(HW + i * CW, RH + j * RH, CW, RH);
+      const v = (edit !== null && j === r && i === c) ? edit : cells[j][i];
+      g.fillStyle = '#000'; g.save(); g.beginPath(); g.rect(HW + i * CW, RH + j * RH, CW, RH); g.clip();
+      g.fillText(v, HW + i * CW + 4, RH + j * RH + RH / 2); g.restore();
+    }
+  }
+  g.strokeStyle = '#1a73e8'; g.lineWidth = 2; g.strokeRect(HW + c * CW, RH + r * RH, CW, RH); g.lineWidth = 1;
+  document.getElementById('namebox').value = colName(c) + (r + 1);
+  document.getElementById('fx').value = edit !== null ? edit : cells[r][c];
+}
+function save() {
+  document.getElementById('saved').textContent = 'All changes saved';
+  labRecord('sheets', {cells: cells.map(row => row.slice())});
+}
+function commit() { if (edit !== null) { cells[r][c] = edit; edit = null; save(); } }
+function move(dr, dc) { r = Math.max(0, Math.min(ROWS - 1, r + dr)); c = Math.max(0, Math.min(COLS - 1, c + dc)); }
+cv.addEventListener('keydown', e => {
+  if (e.key === 'Tab') { e.preventDefault(); commit(); move(0, 1); }
+  else if (e.key === 'Enter') { e.preventDefault(); commit(); r = Math.min(ROWS - 1, r + 1); c = startC; }
+  else if (e.key === 'Home' && e.ctrlKey) { e.preventDefault(); commit(); r = 0; c = 0; startC = 0; }
+  else if (e.key === 'Escape') { edit = null; }
+  else if (e.key === 'Backspace') { e.preventDefault(); edit = (edit !== null ? edit : cells[r][c]).slice(0, -1); }
+  else if (e.key.startsWith('Arrow')) { e.preventDefault(); commit(); move({ArrowUp: -1, ArrowDown: 1}[e.key] || 0, {ArrowLeft: -1, ArrowRight: 1}[e.key] || 0); startC = c; }
+  else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) { e.preventDefault(); if (edit === null) { edit = ''; } edit += e.key; }
+  draw();
+});
+document.addEventListener('paste', e => {
+  if (document.activeElement !== cv) return;
+  e.preventDefault(); commit();
+  const rows = (e.clipboardData.getData('text/plain') || '').replace(/\r/g, '').split('\n').filter(x => x !== '');
+  rows.forEach((line, j) => line.split('\t').forEach((v, i) => { if (r + j < ROWS && c + i < COLS) cells[r + j][c + i] = v; }));
+  save(); draw();
+});
+cv.addEventListener('mousedown', e => {
+  const b = cv.getBoundingClientRect(); const i = Math.floor((e.clientX - b.left - HW) / CW), j = Math.floor((e.clientY - b.top - RH) / RH);
+  if (i >= 0 && j >= 0 && i < COLS && j < ROWS) { commit(); r = j; c = i; startC = c; draw(); }
+  setTimeout(() => cv.focus(), 0);
+});
+document.getElementById('namebox').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const m = /^\s*([A-Ha-h])(\d{1,2})\s*$/.exec(e.target.value);
+  if (m) { commit(); c = m[1].toUpperCase().charCodeAt(0) - 65; r = Math.min(ROWS - 1, parseInt(m[2], 10) - 1); startC = c; }
+  draw(); cv.focus();
+});
+document.getElementById('fx').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault(); cells[r][c] = e.target.value; save(); r = Math.min(ROWS - 1, r + 1); draw(); cv.focus();
+});
+document.getElementById('blank').addEventListener('click', () => {
+  document.getElementById('home').style.display = 'none'; document.getElementById('editor').style.display = 'block';
+  history.replaceState(null, '', 'sheets.html#d/new-sheet'); draw(); cv.focus(); save();
+});
+</script>
+</body></html>

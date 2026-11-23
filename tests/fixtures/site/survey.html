@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Survey - Test Shop</title>
+<style>
+  [role=checkbox], [role=radio] { display: inline-block; padding: 4px 8px; border: 1px solid #888; margin: 4px; cursor: pointer; }
+  [aria-checked=true] { background: #cde; }
+</style></head>
+<body>
+<main>
+  <h1>Short survey</h1>
+  <!-- Custom boxes like Google Forms: divs with role and aria-checked, no <input>. -->
+  <div role="checkbox" aria-checked="false" aria-label="I agree to take part" tabindex="0" id="agree"></div>
+  <p id="q1">Do you like the shop?</p>
+  <div role="radiogroup" aria-labelledby="q1">
+    <div role="radio" aria-checked="false" aria-label="Yes" tabindex="0"></div>
+    <div role="radio" aria-checked="false" aria-label="No" tabindex="0"></div>
+  </div>
+  <p>Share this survey:</p>
+  <input readonly aria-label="Survey link"
+         value="https://forms.example.test/forms/d/e/1FAIpQLSfwwY5tfEZ5xrqfN6ynYRX4l0liCjjwWTy3LQOvEmV5XeN1og/viewform">
+</main>
+<script>
+document.querySelectorAll('[role=checkbox]').forEach(b => b.onclick = () =>
+  b.setAttribute('aria-checked', b.getAttribute('aria-checked') === 'true' ? 'false' : 'true'));
+document.querySelectorAll('[role=radio]').forEach(r => r.onclick = () => {
+  r.parentElement.querySelectorAll('[role=radio]').forEach(o => o.setAttribute('aria-checked', 'false'));
+  r.setAttribute('aria-checked', 'true');
+});
+</script>
+</body></html>

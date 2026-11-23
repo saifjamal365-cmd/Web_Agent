@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Shop - Lab Store</title></head>
+<body><main>
+  <h1>Accessories</h1>
+  <div class="p" data-name="USB-C Cable" data-price="4.50"><h2>USB-C Cable</h2><p>4.50 JOD</p>
+    <button class="minus" aria-label="Decrease USB-C Cable quantity">−</button> <span class="q">1</span>
+    <button class="plus" aria-label="Increase USB-C Cable quantity">+</button> <button class="add">Add to cart</button></div>
+  <div class="p" data-name="Fast Charger" data-price="12.00"><h2>Fast Charger</h2><p>12.00 JOD</p>
+    <button class="minus" aria-label="Decrease Fast Charger quantity">−</button> <span class="q">1</span>
+    <button class="plus" aria-label="Increase Fast Charger quantity">+</button> <button class="add">Add to cart</button></div>
+  <div class="p" data-name="Phone Case" data-price="7.25"><h2>Phone Case</h2><p>7.25 JOD</p>
+    <button class="minus" aria-label="Decrease Phone Case quantity">−</button> <span class="q">1</span>
+    <button class="plus" aria-label="Increase Phone Case quantity">+</button> <button class="add">Add to cart</button></div>
+  <h2>Your cart</h2>
+  <ul id="cart"><li>Empty</li></ul>
+  <label for="coupon">Coupon code</label> <input id="coupon"> <button id="apply">Apply coupon</button>
+  <p id="total">Total: 0.00 JOD</p>
+  <button id="checkout">Checkout and pay</button>
+  <p id="msg" role="status"></p>
+</main>
+<script src="lab.js"></script>
+<script>
+const cart = {}; let coupon = '';
+function render() {
+  const items = Object.entries(cart);
+  document.getElementById('cart').innerHTML = items.length ? items.map(([n, q]) => `<li>${n} × ${q}</li>`).join('') : '<li>Empty</li>';
+  let sub = 0;
+  document.querySelectorAll('.p').forEach(p => { sub += (cart[p.dataset.name] || 0) * parseFloat(p.dataset.price); });
+  const total = coupon === 'SAVE10' ? sub * 0.9 : sub;
+  document.getElementById('total').textContent = `Subtotal: ${sub.toFixed(2)} JOD` + (coupon === 'SAVE10' ? ' · Coupon SAVE10: −10%' : '') + ` · Total: ${total.toFixed(2)} JOD`;
+  labRecord('cart', {cart: Object.assign({}, cart), coupon, total: total.toFixed(2)});
+}
+document.querySelectorAll('.p').forEach(p => {
+  const q = p.querySelector('.q');
+  p.querySelector('.plus').onclick = () => q.textContent = String(parseInt(q.textContent) + 1);
+  p.querySelector('.minus').onclick = () => q.textContent = String(Math.max(1, parseInt(q.textContent) - 1));
+  p.querySelector('.add').onclick = () => { cart[p.dataset.name] = (cart[p.dataset.name] || 0) + parseInt(q.textContent); q.textContent = '1'; render(); };
+});
+document.getElementById('apply').onclick = () => {
+  const v = document.getElementById('coupon').value.trim().toUpperCase();
+  document.getElementById('msg').textContent = v === 'SAVE10' ? 'Coupon applied.' : 'This coupon is not valid.';
+  if (v === 'SAVE10') coupon = v; render();
+};
+document.getElementById('checkout').onclick = () => { labRecord('checkout', {done: true}); document.getElementById('msg').textContent = 'Order placed and paid.'; };
+</script>
+</body></html>

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sales chart - Lab Store</title></head>
+<body><main>
+  <h1>Monthly sales 2026</h1>
+  <p>Sales in thousands of JOD.</p>
+  <!-- The numbers exist only in the picture (canvas), not as text on the page. -->
+  <canvas id="c" width="760" height="360"></canvas>
+</main>
+<script>
+const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const sales = [12, 15, 14, 18, 21, 19, 24, 31, 22, 20, 17, 26];
+const g = document.getElementById('c').getContext('2d');
+g.font = '13px Arial'; g.fillStyle = '#fff'; g.fillRect(0, 0, 760, 360);
+sales.forEach((v, i) => {
+  const x = 40 + i * 58, h = v * 9;
+  g.fillStyle = '#4a7bd0'; g.fillRect(x, 320 - h, 40, h);
+  g.fillStyle = '#000'; g.fillText(months[i], x + 8, 340); g.fillText(String(v), x + 12, 314 - h);
+});
+</script>
+</body></html>

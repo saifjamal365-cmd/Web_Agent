@@ -1,0 +1,135 @@
+[
+  {
+    "id": "sheets-new",
+    "category": "canvas app (spreadsheet)",
+    "must_not_ask": true,
+    "request": "Create a new spreadsheet in Lab Sheets (http://127.0.0.1:8766/sheets.html) and fill it with mock sales data for a supermarket: a header row Date, Product, Units, Price and at least 3 rows of data, each value in its own cell.",
+    "check": "sheets"
+  },
+  {
+    "id": "booking",
+    "category": "custom dropdowns + date",
+    "approval": "approve",
+    "request": "Book a table at http://127.0.0.1:8766/booking.html for 4 guests on 2026-12-05 at 19:30 under the name Lina.",
+    "check": "booking"
+  },
+  {
+    "id": "iframe-form",
+    "category": "form inside a frame",
+    "approval": "approve",
+    "request": "Sign up omar@example.com for the newsletter on http://127.0.0.1:8766/blog.html",
+    "check": "newsletter"
+  },
+  {
+    "id": "shadow-dom",
+    "category": "web components (shadow DOM)",
+    "approval": "approve",
+    "request": "On http://127.0.0.1:8766/outdoor.html, what does the Trail Backpack 30L cost? Also add it to the wishlist.",
+    "expect_all": [
+      "54.90"
+    ],
+    "check": "wishlist"
+  },
+  {
+    "id": "pagination",
+    "category": "pagination",
+    "request": "What does the Blue Kettle cost in the kitchen catalog at http://127.0.0.1:8766/catalog.html?",
+    "expect_all": [
+      "41.60"
+    ]
+  },
+  {
+    "id": "load-more",
+    "category": "content loaded on demand",
+    "request": "How many 1-star reviews does the Zen Pad 13 have? The reviews are at http://127.0.0.1:8766/reviews.html",
+    "expect_regex": "(?i)\\b(4|four)\\b[^.]{0,40}(1|one)[-‐‑ ]star|(1|one)[-‐‑ ]star[^.]{0,60}\\b(4|four)\\b"
+  },
+  {
+    "id": "popups-tabs",
+    "category": "pop-ups, banners, tabs",
+    "request": "What is the phone number of the store? See http://127.0.0.1:8766/store.html",
+    "expect_all": [
+      "555 0142"
+    ]
+  },
+  {
+    "id": "rich-editor",
+    "category": "rich text editor",
+    "approval": "approve",
+    "request": "In Lab Docs (http://127.0.0.1:8766/docs.html) write a short note titled 'Weekly plan' with three lines (one plan each for Monday, Tuesday and Wednesday), then save it.",
+    "check": "docs"
+  },
+  {
+    "id": "broken-link",
+    "category": "recovery (broken link)",
+    "request": "What is the warranty of the Zen Pad 13? Its page used to be http://127.0.0.1:8766/products/zen-pad-13",
+    "expect_regex": "(?i)\\b(2|two)[\\s\\-‐‑]?years?\\b"
+  },
+  {
+    "id": "cart-coupon",
+    "category": "multi-step workflow",
+    "approval": "reject",
+    "request": "On http://127.0.0.1:8766/shop.html add 2 USB-C Cables and 1 Fast Charger to the cart, apply the coupon SAVE10 and tell me the total. Do not check out.",
+    "expect_all": [
+      "18.90"
+    ],
+    "check": "cart"
+  },
+  {
+    "id": "hover-menu",
+    "category": "hover menu",
+    "request": "How many products are in the Garden tools category of the store at http://127.0.0.1:8766/garden.html?",
+    "expect_regex": "(?i)\\b(7|seven)\\b"
+  },
+  {
+    "id": "drag-drop",
+    "category": "drag and drop",
+    "approval": "approve",
+    "request": "On the team board at http://127.0.0.1:8766/board.html move the card 'Write report' to the Done column.",
+    "check": "board"
+  },
+  {
+    "id": "slider-switch",
+    "category": "slider + switch",
+    "approval": "approve",
+    "request": "In the display settings at http://127.0.0.1:8766/settings.html set the brightness to 70, turn dark mode on and save.",
+    "check": "settings"
+  },
+  {
+    "id": "canvas-chart",
+    "category": "vision (chart)",
+    "request": "Which month had the highest sales in the chart at http://127.0.0.1:8766/chart.html, and how much was it?",
+    "expect_regex": "(?i)aug[\\s\\S]{0,80}31|31[\\s\\S]{0,80}aug"
+  },
+  {
+    "id": "ask-when-needed",
+    "category": "asks only when needed",
+    "approval": "approve",
+    "must_ask_question": true,
+    "reply": "Name: Sara, email sara@example.com, message: Are you open on Friday?",
+    "request": "Send a message to the store with the contact form at http://127.0.0.1:8765/contact.html.",
+    "expect_any": [
+      "sent",
+      "thank"
+    ]
+  },
+  {
+    "id": "mega-laptop",
+    "category": "e-commerce: filter, compare, add to cart",
+    "approval": "approve",
+    "must_not_ask": true,
+    "request": "Open the e-commerce website http://127.0.0.1:8766/megashop.html, search for Lenovo laptops, find a laptop under $800 with at least 16GB RAM, compare the available options, and add the best matching laptop to the cart. Do not proceed to checkout.",
+    "check": "mega"
+  },
+  {
+    "id": "mega-cheapest",
+    "category": "e-commerce: cheapest that meets the specs",
+    "approval": "approve",
+    "must_not_ask": true,
+    "request": "On http://127.0.0.1:8766/megashop.html, which Lenovo laptop with at least 16 GB RAM is the cheapest, and what does it cost? Do not add anything to the cart.",
+    "expect_all": [
+      "629"
+    ],
+    "check": "mega_nocart"
+  }
+]

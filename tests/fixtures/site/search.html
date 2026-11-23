@@ -1,0 +1,21 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Search results - Tiny Shop</title></head>
+<body>
+<h1>Search results</h1>
+<main><ul id="results"></ul></main>
+<script>
+  const items = [
+    {name: "Aero Laptop 14", price: "999.00 JOD", url: "product-laptop.html"},
+    {name: "Silent Mouse", price: "15.50 JOD", url: "product-mouse.html"},
+  ];
+  const q = (new URLSearchParams(location.search).get("q") || "").toLowerCase();
+  const list = document.getElementById("results");
+  const found = items.filter(i => i.name.toLowerCase().includes(q) || q === "");
+  if (!found.length) list.innerHTML = "<li>No products found.</li>";
+  for (const i of found) {
+    const li = document.createElement("li");
+    li.innerHTML = `<a href="${i.url}">${i.name}</a> <span class="price">${i.price}</span>`;
+    list.appendChild(li);
+  }
+</script>
+</body></html>

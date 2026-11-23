@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Zen Pad 13 reviews - Lab Store</title></head>
+<body><main>
+  <h1>Zen Pad 13 – customer reviews</h1>
+  <p>30 reviews</p>
+  <div id="list"></div>
+  <button id="more">Show more reviews</button>
+</main>
+<script>
+// 30 reviews, 5 shown at a time. Four of them have 1 star, all after the first 10.
+const stars = [5,4,5,5,4, 3,5,4,5,4, 1,5,4,5,3, 4,1,5,4,5, 5,4,1,5,4, 3,5,1,4,5];
+const texts = ['Great battery', 'Fast and light', 'Good screen', 'Happy with it', 'Nice keyboard', 'Okay for the price'];
+let shown = 0;
+function more() {
+  const box = document.getElementById('list');
+  for (let i = shown; i < Math.min(shown + 5, stars.length); i++) {
+    const d = document.createElement('div');
+    d.innerHTML = `<p><b>${'★'.repeat(stars[i])}${'☆'.repeat(5 - stars[i])}</b> (${stars[i]} of 5 stars) – ` +
+      `${stars[i] === 1 ? 'Stopped working after a week' : texts[i % texts.length]} – reviewer ${i + 1}</p>`;
+    box.appendChild(d);
+  }
+  shown = Math.min(shown + 5, stars.length);
+  if (shown >= stars.length) document.getElementById('more').remove();
+}
+document.getElementById('more').onclick = more;
+more();
+</script>
+</body></html>

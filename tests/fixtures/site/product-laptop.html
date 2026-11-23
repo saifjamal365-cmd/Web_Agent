@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Aero Laptop 14 - Tiny Shop</title></head>
+<body>
+<main>
+  <h1>Aero Laptop 14</h1>
+  <p class="price">Price: 999.00 JOD</p>
+  <p>14-inch screen, 16 GB RAM, 512 GB SSD. In stock.</p>
+  <label for="qty">Quantity</label>
+  <select id="qty" name="qty"><option>1</option><option>2</option><option>3</option></select>
+  <button id="buy" onclick="document.getElementById('status').textContent='Order placed for ' + document.getElementById('qty').value + ' laptop(s).'">Buy now</button>
+  <p id="status"></p>
+  <a href="index.html">Back to shop</a>
+</main>
+</body></html>

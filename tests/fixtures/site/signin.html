@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sign in - Test Shop</title></head>
+<body>
+<main>
+  <h1>Sign in to your Test Shop account</h1>
+  <form id="signin" onsubmit="event.preventDefault(); signIn();">
+    <label for="user">Username</label> <input id="user" name="username" autocomplete="username"><br>
+    <label for="pass">Password</label> <input id="pass" name="password" type="password" autocomplete="current-password"><br>
+    <button type="submit">Sign in</button>
+  </form>
+  <p id="msg"></p>
+  <p><a href="index.html">Back to the shop</a></p>
+</main>
+<script>
+// Local test page only: any username and password are accepted; the "session" is a cookie.
+function signIn() {
+  const u = document.getElementById('user').value.trim();
+  const p = document.getElementById('pass').value;
+  if (!u || !p) { document.getElementById('msg').textContent = 'Enter your username and password.'; return; }
+  document.cookie = 'shop_session=member-' + encodeURIComponent(u) + '; path=/; max-age=86400';
+  location.href = 'account.html';
+}
+</script>
+</body></html>

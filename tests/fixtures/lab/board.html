@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Lab Board</title>
+<style>
+  .cols { display: flex; gap: 16px; } .col { width: 220px; min-height: 260px; background: #f3f3f3; padding: 8px; }
+  .card { background: #fff; border: 1px solid #ccc; padding: 8px; margin: 6px 0; cursor: grab; }
+</style></head>
+<body><main>
+  <h1>Team board</h1>
+  <!-- Cards move only by drag and drop (no menu, no buttons), like many kanban boards. -->
+  <div class="cols">
+    <section class="col" data-col="To do"><h2>To do</h2>
+      <div class="card" draggable="true" id="c1">Write report</div>
+      <div class="card" draggable="true" id="c2">Call supplier</div></section>
+    <section class="col" data-col="Doing"><h2>Doing</h2>
+      <div class="card" draggable="true" id="c3">Update website</div></section>
+    <section class="col" data-col="Done"><h2>Done</h2>
+      <div class="card" draggable="true" id="c4">Order paper</div></section>
+  </div>
+</main>
+<script src="lab.js"></script>
+<script>
+function state() {
+  const out = {};
+  document.querySelectorAll('.col').forEach(c => out[c.dataset.col] = Array.from(c.querySelectorAll('.card')).map(x => x.textContent.trim()));
+  labRecord('board', out);
+}
+document.querySelectorAll('.card').forEach(c => c.addEventListener('dragstart', e => e.dataTransfer.setData('text/plain', c.id)));
+document.querySelectorAll('.col').forEach(col => {
+  col.addEventListener('dragover', e => e.preventDefault());
+  col.addEventListener('drop', e => { e.preventDefault(); const c = document.getElementById(e.dataTransfer.getData('text/plain')); if (c) { col.appendChild(c); state(); } });
+});
+state();
+</script>
+</body></html>

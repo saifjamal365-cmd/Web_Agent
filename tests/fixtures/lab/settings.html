@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Display settings - Lab App</title>
+<style>
+  [role=switch] { display: inline-block; width: 44px; height: 22px; border-radius: 11px; background: #bbb; cursor: pointer; vertical-align: middle; }
+  [role=switch][aria-checked=true] { background: #2a7; }
+</style></head>
+<body><main>
+  <h1>Display settings</h1>
+  <p><label for="br">Brightness</label> <input id="br" type="range" min="0" max="100" step="5" value="40">
+     <output id="brv" for="br">40</output></p>
+  <p><span id="dl">Dark mode</span> <span role="switch" tabindex="0" aria-checked="false" aria-labelledby="dl"></span></p>
+  <p><label for="fs">Text size</label>
+     <select id="fs"><option>Small</option><option selected>Medium</option><option>Large</option></select></p>
+  <button id="save">Save settings</button> <span id="st" role="status"></span>
+</main>
+<script src="lab.js"></script>
+<script>
+const br = document.getElementById('br'), sw = document.querySelector('[role=switch]');
+br.oninput = br.onchange = () => document.getElementById('brv').textContent = br.value;
+const flip = () => sw.setAttribute('aria-checked', sw.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+sw.onclick = flip; sw.onkeydown = e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); flip(); } };
+document.getElementById('save').onclick = () => {
+  labRecord('settings', {brightness: parseInt(br.value, 10), dark: sw.getAttribute('aria-checked') === 'true', size: document.getElementById('fs').value});
+  document.getElementById('st').textContent = 'Settings saved.';
+};
+</script>
+</body></html>

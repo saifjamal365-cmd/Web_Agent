@@ -1,0 +1,72 @@
+# Production-style stack: docker compose up -d --build
+# Needs a .env file next to this one with at least GROQ_API_KEY and POSTGRES_PASSWORD (and WA_API_KEY).
+x-app: &app
+  build: .
+  image: webagent:latest
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    GROQ_API_KEY: ${GROQ_API_KEY:?set GROQ_API_KEY in .env or the shell}
+    WA_API_KEY: ${WA_API_KEY:-}
+    DATABASE_URL: postgresql+psycopg://webagent:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/webagent
+    REDIS_URL: redis://redis:6379/0
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+    WA_BROWSER_CHANNEL: chromium
+    WA_INLINE: "0"
+    WA_LIVE_DIR: /app/data/live
+  volumes:
+    - live:/app/data/live
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_started }
+
+services:
+  api:
+    <<: *app
+    ports: ["127.0.0.1:8020:8020"]
+
+  worker:
+    <<: *app
+    command: ["celery", "-A", "webagent.worker.celery_app", "worker", "--concurrency=1", "-l", "info", "-Q", "webagent"]
+    shm_size: 1gb        # Chromium needs shared memory
+    healthcheck: { disable: true }
+
+  beat:                # starts the watches (repeated tasks) every minute
+    <<: *app
+    command: ["celery", "-A", "webagent.worker.celery_app", "beat", "-l", "info", "-s", "/tmp/celerybeat-schedule"]
+    healthcheck: { disable: true }
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes: [redis:/data]
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: webagent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: webagent
+    volumes: [pg:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webagent -d webagent"]
+      interval: 5s
+      retries: 20
+
+  mlflow:
+    image: webagent:latest
+    restart: unless-stopped
+    command: ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000", "--backend-store-uri", "sqlite:////mlflow/mlflow.db", "--allowed-hosts", "*"]
+    user: root
+    ports: ["127.0.0.1:5000:5000"]
+    volumes: [mlflow:/mlflow]
+    depends_on: []
+
+volumes:
+  live:
+  redis:
+  pg:
+  mlflow:

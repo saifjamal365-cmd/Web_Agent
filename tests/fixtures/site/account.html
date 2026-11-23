@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>My account - Test Shop</title></head>
+<body>
+<main id="main">
+  <h1>My account</h1>
+  <p>Loading...</p>
+</main>
+<script>
+// Local test page only: shows the account when the sign-in cookie is present.
+const m = document.cookie.match(/(?:^|; )shop_session=([^;]+)/);
+const main = document.getElementById('main');
+if (m) {
+  main.innerHTML = '<h1>My account</h1>' +
+    '<p>Welcome back! You are signed in.</p>' +
+    '<p>Membership level: <b>Gold</b></p>' +
+    '<p>Reward points: <b>1,240</b></p>' +
+    '<p>Last order: <b>#A-1042</b>, Silent Mouse, delivered on 18 November 2026</p>' +
+    '<p><a href="index.html">Back to the shop</a></p>';
+} else {
+  main.innerHTML = '<h1>My account</h1>' +
+    '<p>You are not signed in. Please sign in to see your membership, points and orders.</p>' +
+    '<p><a href="signin.html">Sign in</a></p>';
+}
+</script>
+</body></html>

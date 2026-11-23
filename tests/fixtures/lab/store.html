@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Store info - Lab Store</title>
+<style>
+  #cookies { position: fixed; bottom: 0; left: 0; right: 0; background: #222; color: #fff; padding: 12px; z-index: 20; }
+  #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 30; display: none; }
+  #overlay .box { background: #fff; width: 360px; margin: 120px auto; padding: 20px; position: relative; }
+  [role=tabpanel][hidden] { display: none; }
+</style></head>
+<body><main>
+  <h1>Lab Store – store info</h1>
+  <div role="tablist" aria-label="Store information">
+    <button role="tab" aria-selected="true" aria-controls="p1" id="t1">Opening hours</button>
+    <button role="tab" aria-selected="false" aria-controls="p2" id="t2">Location</button>
+    <button role="tab" aria-selected="false" aria-controls="p3" id="t3">Contact</button>
+  </div>
+  <div role="tabpanel" id="p1" aria-labelledby="t1"><p>Saturday–Thursday 9:00–21:00. Friday closed.</p></div>
+  <div role="tabpanel" id="p2" aria-labelledby="t2" hidden><p>Rainbow Street 12, Amman.</p></div>
+  <div role="tabpanel" id="p3" aria-labelledby="t3" hidden><p>Phone: +962 6 555 0142 · Email: hello@labstore.test</p></div>
+</main>
+<div id="cookies">We use cookies. <button id="ca">Accept all</button> <button id="cr">Reject non-essential</button></div>
+<div id="overlay" role="dialog" aria-modal="true" aria-label="Newsletter offer">
+  <div class="box"><h2>Get 10% off!</h2><p>Join our newsletter for deals.</p>
+    <input aria-label="Email for the newsletter"> <button>Join</button>
+    <button id="close" aria-label="Close" style="position:absolute;top:6px;right:8px">×</button></div>
+</div>
+<script>
+document.querySelectorAll('[role=tab]').forEach(t => t.onclick = () => {
+  document.querySelectorAll('[role=tab]').forEach(x => x.setAttribute('aria-selected', String(x === t)));
+  document.querySelectorAll('[role=tabpanel]').forEach(p => p.hidden = p.id !== t.getAttribute('aria-controls'));
+});
+document.getElementById('ca').onclick = document.getElementById('cr').onclick = () => document.getElementById('cookies').remove();
+setTimeout(() => { document.getElementById('overlay').style.display = 'block'; }, 1200);
+document.getElementById('close').onclick = () => document.getElementById('overlay').remove();
+</script>
+</body></html>

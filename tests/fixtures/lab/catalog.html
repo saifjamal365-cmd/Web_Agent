@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Kitchen catalog - Lab Store</title></head>
+<body><main>
+  <h1>Kitchen catalog</h1>
+  <p id="info"></p>
+  <ul id="list"></ul>
+  <nav id="pager" aria-label="Pages"></nav>
+</main>
+<script>
+const names = ['Steel Pan', 'Wooden Spoon', 'Glass Bowl', 'Chef Knife', 'Red Kettle', 'Toaster Duo', 'Rice Cooker',
+  'Salad Spinner', 'Cutting Board', 'Tea Strainer', 'Measuring Cups', 'Frying Pan', 'Hand Mixer', 'Oven Mitt',
+  'Pepper Mill', 'Bread Knife', 'Ice Tray', 'Cake Tin', 'Grill Pan', 'Soup Ladle', 'Milk Frother', 'Spice Rack',
+  'Coffee Press', 'Water Filter', 'Egg Timer', 'Dish Rack', 'Garlic Press', 'Pizza Stone', 'Whisk Set',
+  'Lunch Box', 'Can Opener', 'Pasta Pot', 'Blue Kettle', 'Sieve', 'Roasting Tray', 'Food Scale', 'Peeler',
+  'Mug Set', 'Teapot', 'Butter Dish', 'Wok', 'Ramekins', 'Tongs', 'Colander', 'Jug', 'Grater', 'Apron',
+  'Napkin Set', 'Trivet', 'Flask'];
+const page = Math.max(1, Math.min(5, parseInt(new URLSearchParams(location.search).get('page') || '1', 10)));
+const per = 10, start = (page - 1) * per;
+document.getElementById('info').textContent = `Page ${page} of 5 · ${names.length} products`;
+document.getElementById('list').innerHTML = names.slice(start, start + per)
+  .map((n, i) => `<li>${n} – ${(8 + ((start + i) * 7.3) % 40).toFixed(2)} JOD</li>`).join('');
+let nav = '';
+if (page > 1) nav += `<a href="catalog.html?page=${page - 1}">Previous</a> `;
+for (let p = 1; p <= 5; p++) nav += p === page ? `<b>${p}</b> ` : `<a href="catalog.html?page=${p}">${p}</a> `;
+if (page < 5) nav += `<a href="catalog.html?page=${page + 1}">Next</a>`;
+document.getElementById('pager').innerHTML = nav;
+</script>
+</body></html>

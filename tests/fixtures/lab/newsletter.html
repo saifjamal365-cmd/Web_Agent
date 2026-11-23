@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Newsletter</title></head>
+<body style="font: 14px Arial">
+  <form onsubmit="event.preventDefault(); join();">
+    <label for="em">Your email</label> <input id="em" type="email">
+    <button type="submit">Join the newsletter</button>
+  </form>
+  <p id="m"></p>
+<script src="lab.js"></script>
+<script>
+function join() {
+  const v = document.getElementById('em').value.trim();
+  if (!v.includes('@')) { document.getElementById('m').textContent = 'Enter a valid email.'; return; }
+  labRecord('newsletter', {email: v});
+  document.getElementById('m').textContent = 'Thanks! ' + v + ' is on the list.';
+}
+</script>
+</body></html>

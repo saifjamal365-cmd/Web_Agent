@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Book a table - Lab Bistro</title>
+<style>
+  .combo { position: relative; display: inline-block; margin: 6px 0; }
+  .combo button { min-width: 160px; text-align: left; }
+  [role=listbox] { position: absolute; top: 100%; left: 0; background: #fff; border: 1px solid #999; list-style: none;
+                   margin: 0; padding: 0; z-index: 5; min-width: 160px; }
+  [role=listbox][hidden] { display: none; }
+  [role=option] { padding: 4px 8px; cursor: pointer; } [role=option]:hover { background: #eef; }
+</style></head>
+<body><main>
+  <h1>Lab Bistro – book a table</h1>
+  <form id="f" onsubmit="event.preventDefault(); book();">
+    <label for="name">Name</label> <input id="name" name="name"><br>
+    <label for="date">Date</label> <input id="date" name="date" type="date"><br>
+    <!-- custom dropdowns (no <select>), like many booking sites -->
+    <span id="pl">Guests</span>
+    <div class="combo" data-for="people">
+      <button type="button" role="combobox" aria-labelledby="pl" aria-expanded="false" aria-controls="lp">Choose guests</button>
+      <ul role="listbox" id="lp" hidden aria-labelledby="pl">
+        <li role="option" aria-selected="false">1 guest</li><li role="option" aria-selected="false">2 guests</li>
+        <li role="option" aria-selected="false">3 guests</li><li role="option" aria-selected="false">4 guests</li>
+        <li role="option" aria-selected="false">5 guests</li><li role="option" aria-selected="false">6 guests</li>
+      </ul>
+    </div><br>
+    <span id="tl">Time</span>
+    <div class="combo" data-for="time">
+      <button type="button" role="combobox" aria-labelledby="tl" aria-expanded="false" aria-controls="lt">Choose a time</button>
+      <ul role="listbox" id="lt" hidden aria-labelledby="tl">
+        <li role="option" aria-selected="false">18:00</li><li role="option" aria-selected="false">18:30</li>
+        <li role="option" aria-selected="false">19:00</li><li role="option" aria-selected="false">19:30</li>
+        <li role="option" aria-selected="false">20:00</li><li role="option" aria-selected="false">20:30</li>
+      </ul>
+    </div><br>
+    <button type="submit">Book table</button>
+  </form>
+  <p id="msg" role="status"></p>
+</main>
+<script src="lab.js"></script>
+<script>
+const chosen = {};
+document.querySelectorAll('.combo').forEach(cb => {
+  const btn = cb.querySelector('[role=combobox]'), list = cb.querySelector('[role=listbox]');
+  btn.onclick = () => { list.hidden = !list.hidden; btn.setAttribute('aria-expanded', String(!list.hidden)); };
+  list.querySelectorAll('[role=option]').forEach(o => o.onclick = () => {
+    list.querySelectorAll('[role=option]').forEach(x => x.setAttribute('aria-selected', 'false'));
+    o.setAttribute('aria-selected', 'true'); chosen[cb.dataset.for] = o.textContent.trim();
+    btn.textContent = o.textContent; list.hidden = true; btn.setAttribute('aria-expanded', 'false');
+  });
+});
+function book() {
+  const data = {name: document.getElementById('name').value.trim(), date: document.getElementById('date').value,
+                people: chosen.people || '', time: chosen.time || ''};
+  if (!data.name || !data.date || !data.people || !data.time) { document.getElementById('msg').textContent = 'Please fill in every field.'; return; }
+  labRecord('booking', data);
+  document.getElementById('msg').textContent = `Booked: ${data.people} on ${data.date} at ${data.time} for ${data.name}.`;
+}
+</script>
+</body></html>

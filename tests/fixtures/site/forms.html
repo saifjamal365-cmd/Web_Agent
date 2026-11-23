@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Job application - Test Shop</title></head>
+<body>
+<main>
+  <h1>Apply for a job</h1>
+  <form id="apply" action="/apply" onsubmit="event.preventDefault(); document.getElementById('done').textContent = 'Application received. Thank you, ' + document.getElementById('fullname').value + '!';">
+    <label for="fullname">Full name</label> <input id="fullname" name="fullname"><br>
+    <label for="email">Email</label> <input id="email" name="email" type="email"><br>
+    <label for="role">Position</label>
+    <select id="role" name="role"><option>Choose...</option><option>Cashier</option><option>Store manager</option><option>Driver</option></select><br>
+    <label for="start">Start date</label> <input id="start" name="start" type="date"><br>
+    <fieldset><legend>Shift</legend>
+      <label><input type="radio" name="shift" id="morning" value="morning"> Morning</label>
+      <label><input type="radio" name="shift" id="evening" value="evening"> Evening</label>
+    </fieldset>
+    <label><input type="checkbox" id="newsletter" name="newsletter"> Subscribe to the newsletter</label><br>
+    <label><input type="checkbox" id="terms" name="terms"> I agree to the terms</label><br>
+    <label for="cv">CV (PDF)</label> <input id="cv" name="cv" type="file"><br>
+    <label for="about">About you</label> <textarea id="about" name="about"></textarea><br>
+    <label for="pw">Account password</label> <input id="pw" name="pw" type="password"><br>
+    <button type="submit">Submit application</button>
+  </form>
+  <p id="done"></p>
+</main>
+</body>
+</html>

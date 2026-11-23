@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Lab Outdoor</title></head>
+<body><main>
+  <h1>Lab Outdoor</h1>
+  <p>Gear for hiking and camping.</p>
+  <!-- Product cards are web components: their content is inside a shadow root. -->
+  <lab-product name="Trail Backpack 30L" price="54.90 JOD"></lab-product>
+  <lab-product name="Camp Stove Mini" price="32.00 JOD"></lab-product>
+  <lab-product name="Trekking Poles" price="27.50 JOD"></lab-product>
+  <p id="wl">Wishlist: empty</p>
+</main>
+<script src="lab.js"></script>
+<script>
+const wishlist = [];
+customElements.define('lab-product', class extends HTMLElement {
+  connectedCallback() {
+    const root = this.attachShadow({mode: 'open'});
+    const name = this.getAttribute('name'), price = this.getAttribute('price');
+    root.innerHTML = `<style>div{border:1px solid #ccc;padding:8px;margin:6px 0;width:320px}</style>
+      <div><h3>${name}</h3><p>Price: ${price}</p><button>Add to wishlist</button></div>`;
+    root.querySelector('button').onclick = () => {
+      if (!wishlist.includes(name)) wishlist.push(name);
+      document.getElementById('wl').textContent = 'Wishlist: ' + wishlist.join(', ');
+      labRecord('wishlist', {items: wishlist.slice()});
+    };
+  }
+});
+</script>
+</body></html>

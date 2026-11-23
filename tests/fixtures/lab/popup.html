@@ -1,0 +1,25 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Toolbar app</title>
+<style>
+  body { font-family: sans-serif; margin: 0; }
+  .bar button { margin: 2px; }
+  .modal-dialog-bg { position: fixed; inset: 0; background: rgba(0,0,0,.4); }
+  .modal-dialog { position: fixed; top: 40%; left: 30%; width: 40%; background: #fff; padding: 20px; }
+</style></head>
+<body>
+<!-- Like Google Sheets: a toolbar with many buttons, then an alert pop-up at the end of the page. -->
+<div class="bar" id="bar"></div>
+<div class="modal-dialog-bg" id="bg"></div>
+<div class="modal-dialog" role="alertdialog" id="dlg">
+  <h2>There was a problem</h2>
+  <p>The name given to this range is invalid.</p>
+  <div role="button" tabindex="0" id="ok">OK</div>
+</div>
+<script>
+  const bar = document.getElementById('bar');
+  for (let i = 1; i <= 150; i++) { const b = document.createElement('button'); b.textContent = 'Tool ' + i; bar.appendChild(b); }
+  document.getElementById('ok').onclick = () => {
+    document.getElementById('dlg').remove(); document.getElementById('bg').remove();
+  };
+</script>
+</body></html>

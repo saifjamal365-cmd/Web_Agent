@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Lab Docs</title>
+<style>#ed { border: 1px solid #ccc; min-height: 180px; padding: 10px; width: 600px; white-space: pre-wrap; }</style></head>
+<body><main>
+  <h1>Lab Docs</h1>
+  <input id="title" aria-label="Document title" placeholder="Untitled document">
+  <!-- A rich text editor: no textarea, the page itself is editable. -->
+  <div id="ed" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Document body"></div>
+  <button id="save">Save document</button> <span id="st" role="status"></span>
+</main>
+<script src="lab.js"></script>
+<script>
+document.getElementById('save').onclick = () => {
+  const title = document.getElementById('title').value.trim(), text = document.getElementById('ed').innerText;
+  labRecord('docs', {title, text});
+  document.getElementById('st').textContent = 'Saved "' + (title || 'Untitled document') + '"';
+};
+</script>
+</body></html>

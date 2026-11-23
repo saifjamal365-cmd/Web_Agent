@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Web Agent</title>
+<style>
+  :root {
+    --ink: #14213D; --ink2: #1F2E4F; --paper: #F6F4EF; --paper2: #EAE5DA; --card: #FFFFFF; --muted: #5A6475;
+    --line: #DAD4C6; --accent: #B84A16; --accent-soft: #FBEBDD; --blue: #2F5F9E; --blue-soft: #E3ECF7;
+    --ok: #2E7D4F; --ok-soft: #E3F2E8; --bad: #B3261E; --bad-soft: #FBE9E7; --warn: #8A5A00; --warn-soft: #FFF3D6;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; font: 15px/1.45 "Segoe UI", Inter, Arial, sans-serif; color: var(--ink); background: var(--paper); }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: var(--ink); color: var(--paper); }
+  header h1 { font-size: 18px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+  header .sub { color: #C9D3E3; font-size: 13px; }
+  header .sp { flex: 1; }
+  header button { background: transparent; color: var(--paper); border: 1px solid #3A4A6B; border-radius: 8px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 13px; }
+  .health { font-size: 12px; padding: 3px 8px; border-radius: 999px; background: #2B3A5C; color: #C9D3E3; }
+  .health.ok { background: #1E4D35; color: #CDEBD8; } .health.bad { background: #5C1F1A; color: #F6D3CF; }
+  .needs { margin-right: 10px; font: inherit; font-size: 13px; font-weight: 700; padding: 6px 12px; border-radius: 999px;
+           border: 0; background: #F2B84B; color: #3A2604; cursor: pointer; max-width: 46vw; white-space: nowrap;
+           overflow: hidden; text-overflow: ellipsis; }
+  .needslist { position: absolute; right: 20px; top: 58px; z-index: 20; width: min(560px, calc(100vw - 40px));
+               background: #FFF8E8; color: #2A1D04; border: 1px solid #E3B24F; border-radius: 12px; padding: 10px 12px;
+               box-shadow: 0 10px 30px rgba(0,0,0,.18); }
+  .needslist h4 { margin: 2px 0 8px; font-size: 13px; letter-spacing: .4px; }
+  .needitem { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid #F0DDB0; }
+  .needitem .q { flex: 1; min-width: 0; } .needitem .q b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .needitem .q span { font-size: 12px; color: #7A5A1A; }
+  .needitem button { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 8px; border: 1px solid #C99A3A; background: #fff; cursor: pointer; }
+  .needitem button.open { background: #F2B84B; border-color: #F2B84B; font-weight: 700; }
+  .loginstate { font-size: 13px; margin-top: 6px; } .loginstate.ok { color: #1E6B43; font-weight: 700; }
+  .loginstate.wait { color: #7A5A1A; font-weight: 600; } .loginstate.bad { color: #9A2B1F; font-weight: 600; }
+  main { display: grid; grid-template-columns: minmax(340px, 1fr) minmax(420px, 1.25fr); gap: 16px; padding: 16px; height: calc(100vh - 54px); }
+  .col { display: flex; flex-direction: column; min-height: 0; gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; }
+  #chat { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 92%; padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.user { align-self: flex-end; background: var(--ink); color: var(--paper); border-bottom-right-radius: 4px; }
+  .msg.agent { align-self: flex-start; background: var(--paper2); border-bottom-left-radius: 4px; cursor: pointer; }
+  .msg.agent.sel { outline: 2px solid var(--accent); }
+  .msg .meta { font-size: 12px; color: var(--muted); margin-top: 6px; white-space: normal; }
+  .msg a { color: var(--blue); }
+  .badge { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .5px; padding: 2px 8px; border-radius: 999px; margin-bottom: 4px; text-transform: uppercase; }
+  .b-running, .b-queued { background: var(--blue-soft); color: var(--blue); }
+  .b-waiting_approval, .b-waiting_user { background: var(--warn-soft); color: var(--warn); }
+  .b-done { background: var(--ok-soft); color: var(--ok); } .b-failed { background: var(--bad-soft); color: var(--bad); }
+  .b-cancelled { background: var(--paper); color: var(--muted); }
+  .empty { margin: auto; text-align: center; color: var(--muted); max-width: 380px; }
+  .empty .ex { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 12px; }
+  .chip { border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 13px; color: var(--ink); }
+  .chip:hover { border-color: var(--accent); }
+  form#ask { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
+  form#ask textarea { flex: 1; resize: none; height: 52px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font: inherit; }
+  form#ask textarea:focus { outline: 2px solid var(--blue-soft); border-color: var(--blue); }
+  .btn { border: 0; border-radius: 10px; padding: 8px 16px; font: inherit; font-weight: 600; cursor: pointer; background: var(--accent); color: #fff; }
+  .btn.sec { background: var(--paper2); color: var(--ink); } .btn.ok { background: var(--ok); } .btn.bad { background: var(--bad); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .chatwrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .screen { position: relative; aspect-ratio: 1280 / 860; max-height: 44vh; flex-shrink: 0; background: #F0EEE8; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+  .screen img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .screen .ph { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 14px; }
+  .screen .url { position: absolute; left: 8px; right: 8px; top: 8px; background: rgba(20,33,61,.82); color: #fff; font-size: 12px; padding: 4px 10px; border-radius: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ask-card { padding: 14px; border: 2px solid var(--warn); background: var(--warn-soft); border-radius: 14px; display: none; }
+  .ask-card h3 { margin: 0 0 6px; font-size: 15px; }
+  .ask-card .what { font-family: Consolas, monospace; font-size: 13px; background: #fff; padding: 6px 8px; border-radius: 8px; margin: 6px 0; }
+  .ask-card .row { display: flex; gap: 8px; margin-top: 8px; }
+  .ask-card input { flex: 1; border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; }
+  .trace { flex: 1; overflow-y: auto; padding: 4px 14px 14px; min-height: 120px; }
+  .trace h3, .plan h3 { font-size: 12px; letter-spacing: 1.5px; color: var(--accent); margin: 12px 0 6px; }
+  .step { display: grid; grid-template-columns: 30px 1fr; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--paper2); font-size: 13px; }
+  .step .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .step .tool { font-family: Consolas, monospace; font-weight: 700; }
+  .step .why { color: var(--muted); }
+  .step .res { white-space: pre-wrap; max-height: 4.5em; overflow: hidden; color: var(--ink2); }
+  .step.err .res { color: var(--bad); }
+  .step.meta .tool { color: var(--blue); }
+  .plan ol { margin: 0; padding-left: 20px; font-size: 13px; }
+  .toprow { display: flex; gap: 8px; align-items: center; padding: 10px 14px 0; }
+  .toprow .sp { flex: 1; } .toprow .info { font-size: 12px; color: var(--muted); }
+  .sendcol { display: flex; flex-direction: column; gap: 6px; }
+  .sendcol select { border: 1px solid var(--line); border-radius: 8px; padding: 4px; font: inherit; font-size: 12px; background: var(--card); color: var(--ink); }
+  #watches { border-top: 1px solid var(--line); padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; max-height: 30%; overflow-y: auto; }
+  #watches h4 { margin: 0; font-size: 11px; letter-spacing: 1.5px; color: var(--accent); }
+  .watch { display: flex; gap: 8px; align-items: center; font-size: 13px; padding: 6px 8px; border-radius: 10px; background: var(--paper); }
+  .watch.changed { background: var(--accent-soft); outline: 1px solid var(--accent); }
+  .watch .wq { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .watch .wm { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .watch button { border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; }
+  .watch button:hover { color: var(--bad); }
+  .attach { border: 1px dashed var(--line); background: transparent; color: var(--muted); border-radius: 8px; padding: 4px; font: inherit; font-size: 12px; cursor: pointer; }
+  .attach:hover { color: var(--ink); border-color: var(--ink2); }
+  #files { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 6px; font-size: 12px; }
+  #files .f { background: var(--paper); border-radius: 999px; padding: 2px 8px; color: var(--ink2); }
+  #files .f button { border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 0 0 0 4px; }
+  .dl { font-size: 13px; padding: 6px 0; } .dl a { margin-right: 10px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; height: auto; } #chat { min-height: 50vh; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Web Agent</h1><span class="sub">one agent for any website</span>
+  <span class="sp"></span>
+  <button id="needs" class="needs" hidden></button>
+  <span id="health" class="health">checking…</span>
+  <button id="newchat" title="Start a new conversation">New chat</button>
+</header>
+<div id="needslist" class="needslist" hidden></div>
+<main>
+  <section class="col">
+    <div class="card chatwrap">
+      <div id="chat"></div>
+      <div id="watches" hidden></div>
+      <div id="files" title="Files the agent can attach to forms (upload_file)"></div>
+      <form id="ask">
+        <textarea id="q" placeholder="Tell the agent what to do on the web… (Enter to send, Shift+Enter for a new line)"></textarea>
+        <div class="sendcol">
+          <select id="every" title="Run once, or repeat as a watch and tell me when the answer changes">
+            <option value="0">Once</option><option value="60">Every hour</option>
+            <option value="360">Every 6 hours</option><option value="1440">Every day</option>
+          </select>
+          <button class="btn" id="send">Send</button>
+          <button type="button" class="attach" id="attach" title="Give the agent a file to upload in a form">+ File</button>
+          <input type="file" id="filepick" hidden>
+        </div>
+      </form>
+    </div>
+  </section>
+  <section class="col">
+    <div id="askcard" class="ask-card"></div>
+    <div class="screen" id="screen"><div class="ph" id="ph">The live browser appears here while a task runs.</div><img id="shot" alt="" hidden><div class="url" id="url" hidden></div></div>
+    <div class="card" style="flex:1; display:flex; flex-direction:column; min-height:0">
+      <div class="toprow"><span id="tstatus"></span><span class="info" id="tinfo"></span><span class="sp"></span><button class="btn sec" id="cancel" hidden>Stop</button></div>
+      <div class="trace" id="trace">
+        <div class="plan" id="plan"></div>
+        <div id="downloads"></div>
+        <h3>STEPS</h3><div id="steps"><div class="info" style="color:var(--muted);font-size:13px">No task selected.</div></div>
+      </div>
+    </div>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const EXAMPLES = ["What is the latest Python version on python.org and when was it released?",
+  "Find the price of 'A Light in the Attic' on books.toscrape.com",
+  "Search Wikipedia for 'Petra' and give me 3 key facts with the source",
+  "Compare the top 3 results for 'best budget mechanical keyboard' and summarise them"];
+let key = (() => { try { return localStorage.getItem("wa_key") || ""; } catch { return ""; } })();
+let conv = (() => { try { return localStorage.getItem("wa_conv") || ""; } catch { return ""; } })();
+let selected = null, tasks = [], lastShot = 0, detail = null;
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({"Content-Type": "application/json"}, opts.headers || {});
+  if (key) opts.headers["X-API-Key"] = key;
+  const r = await fetch(path, opts);
+  if (r.status === 401) {
+    key = prompt("This server needs an API key (X-API-Key):") || "";
+    try { localStorage.setItem("wa_key", key); } catch {}
+    return api(path, opts);
+  }
+  if (!r.ok) { let m = r.statusText; try { const j = await r.json(); m = j.detail ? (typeof j.detail === "string" ? j.detail : j.detail.map(d => d.msg).join("; ")) : m; } catch {} throw new Error(m); }
+  return r.status === 204 ? null : r.json();
+}
+const esc = s => (s || "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const linkify = s => esc(s).replace(/(https?:\/\/[^\s<)\]]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+const LABEL = {queued: "Queued", running: "Working", waiting_approval: "Needs your OK", waiting_user: "Needs your reply", done: "Done", failed: "Failed", cancelled: "Stopped"};
+const badge = st => `<span class="badge b-${st}">${LABEL[st] || st}</span>`;
+
+async function health() {
+  try { const h = await api("/api/health"); const el = $("#health"); agentEdge = !!h.agent_edge;
+    el.textContent = h.ok ? `ready · ${h.model}` : `problem: db ${h.database}, queue ${h.queue}, key ${h.groq_key}`;
+    el.className = "health " + (h.ok ? "ok" : "bad"); } catch (e) { $("#health").textContent = "server not reachable"; $("#health").className = "health bad"; }
+}
+
+function renderChat() {
+  const chat = $("#chat");
+  if (!tasks.length) {
+    chat.innerHTML = `<div class="empty"><b>What should the agent do?</b><br>Write a task in words. The agent opens a browser, decides each step itself, and asks you before anything it cannot undo.<div class="ex">${EXAMPLES.map(e => `<button class="chip">${esc(e)}</button>`).join("")}</div></div>`;
+    chat.querySelectorAll(".chip").forEach(b => b.onclick = () => { $("#q").value = b.textContent; $("#q").focus(); });
+    return;
+  }
+  chat.innerHTML = tasks.slice().reverse().map(t => {
+    const body = t.status === "done" || t.status === "failed" || t.status === "cancelled"
+      ? linkify(t.answer || t.error || "")
+      : t.status === "queued" ? "Waiting for a free browser…"
+      : t.status === "waiting_user" ? "<b>Needs your reply.</b> Click here and answer on the right."
+      : t.status === "waiting_approval" ? "<b>Needs your OK.</b> Click here and decide on the right."
+      : "Working on it… (watch the steps on the right)";
+    const src = (t.sources || []).length ? `<div class="meta">Sources: ${(t.sources).map(s => linkify(s)).join(" · ")}</div>` : "";
+    const meta = `<div class="meta">${t.steps_count} steps${t.tokens ? " · " + t.tokens.toLocaleString() + " tokens" : ""}</div>`;
+    return `<div class="msg user">${esc(t.request)}</div><div class="msg agent ${t.id === selected ? "sel" : ""}" data-id="${t.id}">${badge(t.status)}<br>${body}${src}${meta}</div>`;
+  }).join("");
+  chat.querySelectorAll(".msg.agent").forEach(m => m.onclick = () => openTask(conv, m.dataset.id));
+  const sig = tasks.map(t => t.id + t.status).join();
+  if (sig !== chatSig) { chatSig = sig; chat.scrollTop = chat.scrollHeight; }  // scroll only when something changed
+}
+
+function renderDetail(d) {
+  if (!d) return;
+  $("#tstatus").innerHTML = badge(d.status);
+  $("#tinfo").textContent = ` ${d.steps_count} steps${d.current_url ? " · " + d.current_url : ""}`;
+  $("#cancel").hidden = !["queued", "running", "waiting_approval", "waiting_user"].includes(d.status);
+  $("#plan").innerHTML = (d.plan || []).length ? `<h3>PLAN</h3><ol>${d.plan.map(p => `<li>${esc(p)}</li>`).join("")}</ol>` : "";
+  const steps = d.steps || [];
+  $("#steps").innerHTML = steps.length ? steps.slice().reverse().map(s => {
+    const args = Object.entries(s.args || {}).map(([k, v]) => `${k}=${typeof v === "string" ? JSON.stringify(v.length > 80 ? v.slice(0, 80) + "…" : v) : JSON.stringify(v)}`).join(" ");
+    const metaNode = ["recall", "check", "reflect", "learn"].includes(s.tool);
+    return `<div class="step ${s.ok ? "" : "err"} ${metaNode ? "meta" : ""}"><div class="n">${s.n}</div><div><span class="tool">${esc(s.tool || s.node)}</span> ${esc(args)}${s.why ? `<div class="why">${esc(s.why)}</div>` : ""}<div class="res">${esc(s.result || "")}</div></div></div>`;
+  }).join("") : `<div style="color:var(--muted);font-size:13px">No steps yet.</div>`;
+  const card = $("#askcard"), p = d.pending;
+  // The page refreshes every second: keep the open question/approval card (and what you are typing) as it is.
+  const cardKey = p ? `${d.id}:${p.id}` : "";
+  if (cardKey && card.dataset.key === cardKey) { renderDownloads(d); updateLoginState(p); return; }
+  card.dataset.key = cardKey;
+  if (p && p.kind === "approval") {
+    card.style.display = "block";
+    card.innerHTML = `<h3>The agent wants to do something that may not be undoable</h3><div>${esc(p.message)}</div><div class="what">${esc((p.action || {}).what || "")}</div>${(p.action || {}).why ? `<div style="font-size:13px;color:var(--muted)">Agent's reason: ${esc(p.action.why)}</div>` : ""}<div class="row"><input id="note" placeholder="Optional note to the agent"><button class="btn ok" id="yes">Approve</button><button class="btn bad" id="no">Reject</button></div>`;
+    $("#yes").onclick = () => decide(d.id, true); $("#no").onclick = () => decide(d.id, false);
+  } else if (p && p.kind === "question") {
+    card.style.display = "block";
+    const site = (p.action || {}).tool === "login" ? ((p.action || {}).site || "") : "";
+    card.innerHTML = `<h3>The agent asks you</h3><div>${linkify(p.message)}</div>${site ? `<div class="row"><button class="btn sec" id="loginbtn">${agentEdge ? `Show the ${esc(site)} sign-in page in the agent's Edge` : `Open login window for ${esc(site)}`}</button></div><div id="loginstate" class="loginstate"></div>` : ""}<div class="row"><input id="replytext" placeholder="Your answer"><button class="btn" id="replybtn">Reply</button></div>`;
+    if (site) $("#loginbtn").onclick = async () => {
+      try { await api("/api/logins", {method: "POST", body: JSON.stringify({url: (p.action || {}).url || site})});
+        const el = $("#loginstate"); el.className = "loginstate wait";
+        el.textContent = "Opening a separate browser window (the same browser the agent uses, with an empty profile, so your own passwords are not used)…";
+        setTimeout(() => updateLoginState(p), 1500);
+      } catch (e) { $("#loginstate").className = "loginstate bad"; $("#loginstate").textContent = "Could not open the login window: " + e.message; }
+    };
+    $("#replybtn").onclick = () => sendReply(d.id);
+    $("#replytext").onkeydown = e => { if (e.key === "Enter") sendReply(d.id); };
+    updateLoginState(p);
+  } else { card.style.display = "none"; card.innerHTML = ""; }
+  renderDownloads(d);
+}
+
+// Login card: say whether the login window saved a login for this site (the agent can only use a saved one).
+const siteMatch = (a, b) => a === b || a.endsWith("." + b) || b.endsWith("." + a);
+async function updateLoginState(p) {
+  const el = $("#loginstate"), site = ((p || {}).action || {}).site || "";
+  if (!el || !site) return;
+  try {
+    const [st, logins] = await Promise.all([api(`/api/logins/${encodeURIComponent(site)}/status`), api("/api/logins")]);
+    const saved = logins.find(l => siteMatch(site, l.site));
+    let cls = "loginstate", text = `No login saved for ${site} yet. If the site refuses to sign in in that window, reply "skip".`;
+    if (st.state === "agent_edge") { cls = "loginstate wait"; text = st.message; }
+    else if (st.state === "open") { cls = "loginstate wait"; text = `The login window for ${site} is open: a separate browser window with a yellow bar at the bottom (it may be behind this one). Sign in there, then close it. This line turns green when your login is saved.`; }
+    else if (saved) { cls = "loginstate ok"; text = `Your login for ${saved.site} is saved. Reply "done" so the agent uses it.`; }
+    else if (st.state === "not_signed_in") { cls = "loginstate bad"; text = st.message; }
+    if (el.textContent !== text) { el.className = cls; el.textContent = text; }
+  } catch {}
+}
+
+// The list of every task that waits for the person, in any chat.
+function toggleNeeds() { const l = $("#needslist"); l.hidden = !l.hidden; if (!l.hidden) renderNeeds(); }
+function renderNeeds() {
+  const l = $("#needslist");
+  const sig = waitingAll.map(t => t.id + t.status).join();
+  if (l.dataset.sig === sig) return;  // unchanged: keep it as it is
+  l.dataset.sig = sig;
+  const ago = iso => { const m = Math.round((Date.now() - new Date(iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z")) / 60000);
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`; };
+  l.innerHTML = `<h4>WAITING FOR YOUR ANSWER (${waitingAll.length})</h4>` + waitingAll.map(t => `
+    <div class="needitem"><div class="q"><b title="${esc(t.request)}">${esc(t.request)}</b>
+      <span>${t.status === "waiting_approval" ? "needs your OK" : "needs your reply"} · ${t.conversation_id === conv ? "this chat" : "another chat"} · asked ${ago(t.updated_at || t.created_at)}</span></div>
+      <button class="open" data-open="${t.id}" data-conv="${t.conversation_id}">Open</button>
+      <button data-stop="${t.id}" title="Stop this task">Stop</button></div>`).join("");
+  l.querySelectorAll("[data-open]").forEach(b => b.onclick = () => { l.hidden = true; openTask(b.dataset.conv, b.dataset.open); });
+  l.querySelectorAll("[data-stop]").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try { await api(`/api/tasks/${b.dataset.stop}/cancel`, {method: "POST"}); } catch (e) { alert(e.message); }
+    l.dataset.sig = ""; refresh();
+  });
+}
+document.addEventListener("click", e => { const l = $("#needslist");
+  if (!l.hidden && !l.contains(e.target) && e.target.id !== "needs") l.hidden = true; });
+
+// Open a task (in any chat) and show its card again.
+function openTask(c, id) {
+  if (c && c !== conv) { conv = c; try { localStorage.setItem("wa_conv", conv); } catch {} }
+  selected = id; lastShot = 0; chatSig = ""; $("#askcard").dataset.key = ""; refresh();
+}
+
+async function renderDownloads(d) {
+  const box = $("#downloads");
+  try {
+    const fs = (await api(`/api/files?task_id=${encodeURIComponent(d.id)}`)).filter(f => f.where === "downloads");
+    box.innerHTML = fs.length ? `<h3>FILES DOWNLOADED</h3><div class="dl">${fs.map(f => `<a href="#" data-n="${esc(f.name)}">${esc(f.name)}</a>`).join("")}</div>` : "";
+    box.querySelectorAll("a").forEach(a => a.onclick = async e => {
+      e.preventDefault();
+      const r = await fetch(`/api/files/downloads/${encodeURIComponent(a.dataset.n)}?task_id=${encodeURIComponent(d.id)}`, {headers: key ? {"X-API-Key": key} : {}});
+      if (!r.ok) return alert("Could not get the file.");
+      const url = URL.createObjectURL(await r.blob()); const t = document.createElement("a");
+      t.href = url; t.download = a.dataset.n; t.click(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+    });
+  } catch { box.innerHTML = ""; }
+}
+
+async function refreshFiles() {
+  try {
+    const fs = (await api("/api/files")).filter(f => f.where === "inbox");
+    $("#files").innerHTML = fs.map(f => `<span class="f">📎 ${esc(f.name)}<button data-n="${esc(f.name)}" title="Remove">×</button></span>`).join("");
+    $("#files").querySelectorAll("button").forEach(b => b.onclick = async () => {
+      try { await api(`/api/files/inbox/${encodeURIComponent(b.dataset.n)}`, {method: "DELETE"}); } catch (e) { alert(e.message); }
+      refreshFiles();
+    });
+  } catch {}
+}
+$("#attach").onclick = () => $("#filepick").click();
+$("#filepick").onchange = async () => {
+  const f = $("#filepick").files[0]; if (!f) return;
+  try {
+    const r = await fetch(`/api/files?name=${encodeURIComponent(f.name)}`, {method: "POST", body: f,
+      headers: Object.assign({"Content-Type": "application/octet-stream"}, key ? {"X-API-Key": key} : {})});
+    if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail; } catch {} throw new Error(m); }
+  } catch (e) { alert("Could not add the file: " + e.message); }
+  $("#filepick").value = ""; refreshFiles();
+};
+
+async function decide(id, ok) {
+  try { await api(`/api/tasks/${id}/approve`, {method: "POST", body: JSON.stringify({approved: ok, note: ($("#note") || {}).value || null})}); } catch (e) { alert(e.message); }
+  refresh();
+}
+async function sendReply(id) {
+  const text = ($("#replytext") || {}).value || ""; if (!text.trim()) return;
+  try { await api(`/api/tasks/${id}/reply`, {method: "POST", body: JSON.stringify({text})}); } catch (e) { alert(e.message); }
+  refresh();
+}
+
+function updateShot(d) {
+  if (!d) return;
+  const active = ["running", "waiting_approval", "waiting_user", "queued"].includes(d.status);
+  if (!active && lastShot && Date.now() - lastShot < 600000) return;
+  lastShot = Date.now();
+  const img = $("#shot");
+  const probe = new Image();
+  probe.onload = () => { img.src = probe.src; img.hidden = false; $("#ph").hidden = true; };
+  probe.src = `/api/tasks/${d.id}/screen?t=${Date.now()}` + (key ? "" : "");
+  if (key) { // images cannot send headers: fetch as blob
+    fetch(`/api/tasks/${d.id}/screen`, {headers: {"X-API-Key": key}}).then(r => r.status === 200 ? r.blob() : null)
+      .then(b => { if (b) { img.src = URL.createObjectURL(b); img.hidden = false; $("#ph").hidden = true; } }).catch(() => {});
+  }
+  $("#url").hidden = !d.current_url; $("#url").textContent = d.current_url || "";
+}
+
+async function refresh() {
+  try {
+    waitingAll = (await api("/api/tasks?limit=50")).filter(t => t.status === "waiting_user" || t.status === "waiting_approval");
+    const nb = $("#needs");
+    if (waitingAll.length) {
+      nb.hidden = false;
+      nb.textContent = waitingAll.length > 1 ? `${waitingAll.length} tasks need you ▾` : `Needs your answer: ${waitingAll[0].request}`;
+      nb.title = waitingAll.length > 1 ? "Show the tasks that wait for your answer" : "Open this task and answer it";
+      nb.onclick = () => waitingAll.length > 1 ? toggleNeeds() : openTask(waitingAll[0].conversation_id, waitingAll[0].id);
+      if (!$("#needslist").hidden) renderNeeds();
+    } else { nb.hidden = true; $("#needslist").hidden = true; }
+    tasks = conv ? await api(`/api/tasks?conversation_id=${encodeURIComponent(conv)}&limit=50`) : [];
+    if (!selected && tasks.length) selected = tasks[0].id;
+    renderChat();
+    if (selected) { detail = await api(`/api/tasks/${selected}`); renderDetail(detail); updateShot(detail); }
+  } catch (e) { console.warn(e); }
+}
+
+$("#ask").onsubmit = async e => {
+  e.preventDefault();
+  const request = $("#q").value.trim(); if (request.length < 3) return;
+  const every = parseInt($("#every").value, 10);
+  $("#send").disabled = true;
+  try {
+    if (every > 0) {
+      const w = await api("/api/watches", {method: "POST", body: JSON.stringify({request, every_minutes: every, conversation_id: conv || null})});
+      conv = w.conversation_id; if (w.started_task) selected = w.started_task;
+      $("#every").value = "0";
+    } else {
+      const t = await api("/api/tasks", {method: "POST", body: JSON.stringify({request, conversation_id: conv || null})});
+      conv = t.conversation_id; selected = t.id;
+    }
+    try { localStorage.setItem("wa_conv", conv); } catch {}
+    lastShot = 0; $("#q").value = "";
+  } catch (err) { alert("Could not start the task: " + err.message); }
+  $("#send").disabled = false; refresh(); refreshWatches();
+};
+
+const EVERY = m => m % 1440 === 0 ? (m === 1440 ? "daily" : `every ${m / 1440} days`) : m % 60 === 0 ? (m === 60 ? "hourly" : `every ${m / 60} h`) : `every ${m} min`;
+async function refreshWatches() {
+  try {
+    const ws = await api("/api/watches");
+    const box = $("#watches");
+    box.hidden = !ws.length;
+    box.innerHTML = `<h4>WATCHES (repeat and tell me when it changes)</h4>` + ws.map(w => `
+      <div class="watch ${w.changed ? "changed" : ""}" title="${esc(w.last_answer || "")}">
+        <span class="wq">${w.changed ? "<b>CHANGED</b> · " : ""}${esc(w.request)}</span>
+        <span class="wm">${EVERY(w.every_minutes)} · ${w.runs} run${w.runs === 1 ? "" : "s"}</span>
+        ${w.last_task_id ? `<button data-open="${w.last_task_id}" data-conv="${w.conversation_id}">last result</button>` : ""}
+        <button data-stop="${w.id}" title="Stop this watch">stop</button>
+      </div>`).join("");
+    box.querySelectorAll("[data-stop]").forEach(b => b.onclick = async () => { await api(`/api/watches/${b.dataset.stop}`, {method: "DELETE"}); refreshWatches(); });
+    box.querySelectorAll("[data-open]").forEach(b => b.onclick = () => openTask(b.dataset.conv, b.dataset.open));
+  } catch (e) { console.warn(e); }
+}
+$("#q").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#ask").requestSubmit(); } };
+$("#cancel").onclick = async () => { if (selected) { await api(`/api/tasks/${selected}/cancel`, {method: "POST"}); refresh(); } };
+$("#newchat").onclick = () => { conv = ""; selected = null; chatSig = ""; $("#askcard").dataset.key = ""; try { localStorage.removeItem("wa_conv"); } catch {}
+  $("#shot").hidden = true; $("#ph").hidden = false; $("#steps").innerHTML = ""; $("#plan").innerHTML = ""; $("#tstatus").innerHTML = ""; $("#tinfo").textContent = ""; $("#askcard").style.display = "none"; refresh(); };
+
+var waitingAll = [], chatSig = "", agentEdge = false;
+health(); refresh(); refreshWatches(); refreshFiles();
+setInterval(refresh, 1200); setInterval(health, 15000); setInterval(refreshWatches, 10000);
+</script>
+</body>
+</html>

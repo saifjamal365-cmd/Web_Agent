@@ -406,3 +406,47 @@ def test_planner_and_checker_do_not_add_requirements_the_person_did_not_state():
     assert 'never add a requirement they did not state' in prompts.PLAN and '"just"' in prompts.PLAN
     assert "Never add a requirement the person's words do not state" in prompts.CHECK
     assert "1-50 of\n  many" in prompts.SYSTEM or "of many" in prompts.SYSTEM
+
+
+def test_a_question_the_person_answered_is_not_asked_again():
+    """Live run (Google Chat): the agent drafted a reply, asked for approval, got "yes", and asked again 6 times."""
+    from webagent.agent.graph import _asked_before, _render
+    q = ('The last message from Mahmoud Ayman Sayed is: "I have other tasks..." A fast reply could be: "Sure, I will '
+         'start improving the project today." Do you approve sending this reply?')
+    state = {"task": "recommend a fast reply and get my approval to send it", "plan": [],
+             "steps": [{**_step("ask_user", {"question": q}, "The person answered: yes approved"), "n": 4}]}
+    again = _asked_before(state, q.replace("A fast reply could be", "Suggested quick reply"))
+    assert again and "step 4" in again and "yes approved" in again and "type exactly that text" in again
+    assert _asked_before(state, "Which of your two email accounts should I use?") is None
+    # the model sees the whole question next to the answer, not 160 characters of it
+    text = _render(state, "(page)")
+    assert "Do you approve sending this reply?" in text and "THE PERSON ALREADY ANSWERED" in text
+
+
+def test_text_the_person_approved_is_sent_without_asking_twice():
+    from webagent.agent import tools as T
+    from webagent.agent.graph import _approved_in_chat
+    from webagent.browser.session import Snapshot
+    q = 'Suggested reply: "Sure, I will start improving the project today." Do you approve sending it?'
+    typed = _step("type", {"ref": "e5", "text": "Sure, I will start improving the project today."}, "Typed.")
+    snap = Snapshot(url="https://chat.test", title="", text="", refs={
+        "e7": {"ref": "e7", "role": "button", "name": "Send message"},
+        "e8": {"ref": "e8", "role": "button", "name": "Delete conversation"}})
+    yes = {"steps": [{**_step("ask_user", {"question": q}, "The person answered: yes"), "n": 3}, typed]}
+    enter = T.validate("press", {"key": "Enter"})
+    assert _approved_in_chat(yes, "press", enter) == (3, "yes")
+    assert _approved_in_chat(yes, "click", T.validate("click", {"ref": "e7"}), snap)
+    # only the action that sends it: never another risky button
+    assert _approved_in_chat(yes, "click", T.validate("click", {"ref": "e8"}), snap) is None
+    # other text, or a "no", still asks the person
+    other = {"steps": [yes["steps"][0], _step("type", {"ref": "e5", "text": "I quit."}, "Typed.")]}
+    assert _approved_in_chat(other, "press", enter) is None
+    no = {"steps": [{**_step("ask_user", {"question": q}, "The person answered: no, make it shorter"), "n": 3}, typed]}
+    assert _approved_in_chat(no, "press", enter) is None
+
+
+def test_enter_in_a_chat_box_without_a_form_needs_approval():
+    assert safety.submit_reason(el("Message Mahmoud Ayman Sayed", role="textbox")) is not None
+    assert safety.submit_reason(el("History is on", role="textbox")) is not None
+    assert safety.submit_reason(el("Search chat", role="input:text")) is None
+    assert safety.submit_reason(el("Quantity", role="input:text")) is None

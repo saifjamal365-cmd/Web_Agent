@@ -223,6 +223,11 @@ def _render(state: AgentState, snap_text: str, max_steps: int | None = None) -> 
     parts.append("PLAN:\n" + "\n".join(f"{i + 1}. {p}" for i, p in enumerate(state.get("plan") or [])))
     if state.get("notes"):
         parts.append("NOTES:\n" + "\n".join(f"- {n['fact']} (source: {n['source']})" for n in state["notes"]))
+    answers = _answers(state)
+    if answers:
+        parts.append("THE PERSON ALREADY ANSWERED (never ask these again; act on the answers):\n" + "\n".join(
+            f"- step {n}: you asked \"{q[:300]}{'...' if len(q) > 300 else ''}\" -> they answered \"{a}\""
+            for n, q, a in answers[-6:]))
     done = _done_so_far(state)
     if done:
         parts.append("DONE SO FAR (this really happened; never do it again):\n" + "\n".join(f"- {d}" for d in done) +
@@ -237,6 +242,12 @@ def _render(state: AgentState, snap_text: str, max_steps: int | None = None) -> 
             args = {k: v for k, v in (s.get("args") or {}).items() if k != "why"}
             res = (s.get("result") or "").replace("\n", " ")
             res = res[:300] + ("..." if len(res) > 300 else "")
+            if s.get("tool") == "ask_user":
+                # The whole question: cut to 160 characters, "yes" lost what it said yes to (live run: the agent
+                # asked for approval of its drafted reply 6 times and never sent it).
+                q = str(args.get("question") or "").replace("\n", " ")
+                lines.append(f"{s['n']}. ask_user \"{q[:900]}\" -> {'' if s.get('ok', True) else 'ERROR: '}{res}")
+                continue
             lines.append(f"{s['n']}. {s.get('tool')} {json.dumps(args, ensure_ascii=False)[:160]} -> "
                          f"{'' if s.get('ok', True) else 'ERROR: '}{res}")
         if lines:
@@ -336,6 +347,89 @@ def _notes_summary(state: AgentState) -> str:
     return "What was found so far: " + "; ".join(f"{n['fact']} ({n['source']})" for n in notes[-6:])
 
 
+YES = re.compile(r"^\W*(yes|yeah|yep|yup|ok|okay|sure|approve[ds]?|i approve|go ahead|send( it)?|do it|confirm(ed)?|"
+                 r"agreed?|correct|right|fine|good|perfect|نعم|موافق|تمام|اوكي)\b", re.I)
+NOT_YES = re.compile(r"\b(no|not|don'?t|do not|never|wait|stop|change|instead|but)\b|لا", re.I)
+
+
+def _answers(state: AgentState) -> list[tuple[int, str, str]]:
+    """(step, question, answer) for every question the person answered in this task."""
+    out = []
+    for s in state.get("steps") or []:
+        if s.get("tool") == "ask_user" and s.get("ok", True):
+            res = str(s.get("result") or "")
+            if res.startswith("The person answered:"):
+                out.append((s.get("n"), str((s.get("args") or {}).get("question") or ""),
+                            res.split(":", 1)[1].strip()[:300]))
+    return out
+
+
+def _is_yes(answer: str) -> bool:
+    return bool(YES.search(answer or "")) and not NOT_YES.search(answer or "")
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"\w+", (text or "").lower()) if len(w) > 2}
+
+
+def _asked_before(state: AgentState, question: str) -> str | None:
+    """Refuse a question the person already answered (same question in other words)."""
+    new = _words(question)
+    if not new:
+        return None
+    for n, q, a in reversed(_answers(state)):
+        old = _words(q)
+        if old and len(new & old) / len(new | old) >= 0.5:
+            follow = (" They said yes: do it now. If it was a message to send, type exactly that text in the message "
+                      "box and send it; the system does not ask again for the text the person approved."
+                      if _is_yes(a) else " Act on that answer.")
+            return (f"You already asked this at step {n} and the person answered: \"{a}\". Never ask it again."
+                    + follow)
+    return None
+
+
+def _norm_text(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[\"'“”‘’`]", "", text or "")).strip().lower()
+
+
+def _sent_text(state: AgentState, name: str, args) -> str:
+    """The text an approval would send: typed with submit=true, or the last text typed before Enter / Send."""
+    if name == "type":
+        return args.text
+    for s in reversed(state.get("steps") or []):
+        if s.get("tool") in ("type", "keys") and s.get("ok", True):
+            return str((s.get("args") or {}).get("text") or "")
+    return ""
+
+
+def _approved_in_chat(state: AgentState, name: str, args, snap: Snapshot | None = None) -> tuple[int, str] | None:
+    """The person already approved sending this exact text: the agent showed it in a question and they said yes.
+    Then the system does not ask a second time (the person was asked the same thing twice before). Only for the
+    action that sends that text: Enter, type with submit, or a Send / Reply / Post button."""
+    if name == "click":
+        try:
+            label = str(snap.element(args.ref).get("name") or "") if snap is not None else ""
+        except BrowserError:
+            label = ""
+        if not re.search(r"\b(send|reply|post|comment)\b", label, re.I):
+            return None
+    elif name == "press":
+        if args.key != "Enter":
+            return None
+    elif name == "keys":
+        if "\n" not in args.text:
+            return None
+    elif not (name == "type" and args.submit):
+        return None
+    text = _norm_text(_sent_text(state, name, args))
+    if len(text) < 3:
+        return None
+    for n, q, a in reversed(_answers(state)):
+        if _is_yes(a) and text in _norm_text(q):
+            return n, a
+    return None
+
+
 def _person_text(state: AgentState) -> str:
     """Everything the person wrote in this task: the request, their answers, and earlier questions in the chat."""
     parts = [state.get("task") or ""]
@@ -406,6 +500,10 @@ def gate(state: AgentState, config) -> dict:
     made_up = T.invented_personal(p["name"], args, ctx.snap, _person_text(state))
     if made_up:
         return {"decision": {"refused": made_up}}
+    if p["name"] == "ask_user":
+        again = _asked_before(state, args.question)
+        if again:
+            return {"decision": {"refused": again}}
     g = T.gate(p["name"], args, ctx.snap, state.get("last_typed"), desktop=ctx.env.desktop)
     if g.kind == "ok":
         return {"decision": {"approved": True}}
@@ -422,6 +520,11 @@ def gate(state: AgentState, config) -> dict:
     # approval
     what = T.describe_action(p["name"], args, ctx.snap)
     key = _action_key(p["name"], args, ctx.snap)
+    earlier = _approved_in_chat(state, p["name"], args, ctx.snap)
+    if earlier and not any(r["key"] == key for r in state.get("rejected") or []):
+        log.info("Approved earlier by the person (step %s: %s): %s", earlier[0], earlier[1], what)
+        return {"decision": {"approved": True, "key": key, "what": what,
+                             "note": f"approved at step {earlier[0]} (\"{earlier[1]}\")"}}
     for r in state.get("rejected") or []:
         if r["key"] == key:
             return {"decision": {"refused": f"The person already REJECTED this ({r['what']}). Do not try it again "

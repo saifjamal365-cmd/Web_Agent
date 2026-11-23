@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Chat - Lab Messenger</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; font: 14px sans-serif; }
+  .app { display: flex; height: 100vh; }
+  nav { width: 220px; border-right: 1px solid #ccc; padding: 8px; }
+  main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  header { padding: 8px; border-bottom: 1px solid #ccc; }
+  #messages { flex: 1; overflow-y: auto; padding: 8px; }
+  .msg { margin: 0 0 18px; }
+  .who { font-weight: bold; }
+  textarea { margin: 8px; height: 40px; }
+</style></head>
+<body><div class="app">
+<nav aria-label="Direct messages">
+  <a href="#">Mahmoud Ayman Sayed</a><br><a href="#">Ibrahim Nady</a><br><a href="#">Mira Mashal</a>
+</nav>
+<main>
+  <header><h2>Mahmoud Ayman Sayed</h2></header>
+  <div id="messages" role="region" aria-label="Message list"></div>
+  <textarea aria-label="Message Mahmoud Ayman Sayed" placeholder="History is on"></textarea>
+</main>
+</div>
+<script>
+// Like a real chat app: the page does not scroll, the message list does, and it opens at the bottom (the newest).
+const old = [
+  ['Mahmoud Ayman Sayed (via Meet)', 'Yesterday 5:02 PM', 'Call ended'],
+];
+for (let i = 1; i <= 30; i++) {
+  old.push([i % 2 ? 'Saif' : 'Mahmoud Ayman Sayed', 'Yesterday ' + (5 + Math.floor(i / 10)) + ':' + String(10 + i).padStart(2, '0') + ' PM',
+            'Older note number ' + i + ' about the project schedule, the test plan and the weekly report for the team.']);
+}
+old.push(['Saif', '17 min', 'eng. mahmoud can you response me anything, for testing purposes']);
+old.push(['Mahmoud Ayman Sayed', '15 min', 'I have other tasks, Saif and busy schedule, can you please work on improving it and find areas of improvments on the project?']);
+const box = document.getElementById('messages');
+for (const [who, when, text] of old) {
+  const d = document.createElement('div');
+  d.className = 'msg';
+  d.innerHTML = `<div><span class="who">${who}</span> <span>${when}</span></div><div>${text}</div>`;
+  box.appendChild(d);
+}
+box.scrollTop = box.scrollHeight;
+</script>
+</body></html>

@@ -367,3 +367,21 @@ def test_extract_that_finds_nothing_suggests_asking_for_the_rows_plainly(browser
               browser.snapshot())
     assert "Nothing found" in r.text and "ask again in plain words" in r.text
     assert "already filtered" in T.EXTRACT_PROMPT
+
+
+def test_a_chat_shows_its_newest_message_and_scrolls_its_own_pane(browser, lab):
+    """Live run (Google Chat): the agent saw only the oldest loaded messages, its name search showed the name without
+    the message under it, and scroll turned the wheel where nothing scrolls, so it said nothing new came today."""
+    browser.goto(lab + "/chat.html")
+    snap = browser.snapshot()
+    # the start of the page text is yesterday; the screen shows the newest message
+    assert "Call ended" in snap.text
+    assert "Text in view now" in snap.text and "I have other tasks" in snap.text and "15 min" in snap.text
+    # a name search shows what each person wrote, newest last
+    found = browser.find_text("Mahmoud Ayman Sayed")
+    assert "15 min  ->  I have other tasks" in found and found.rstrip().endswith("the last one is the newest.)")
+    # the message list is at the bottom: scrolling down says so; scrolling up moves the list, not the still page
+    assert "already at the bottom" in browser.scroll("down")
+    up = browser.scroll("up")
+    assert up.startswith('Scrolled up the "Message list" area'), up
+    assert "Older note number" in browser.snapshot().text

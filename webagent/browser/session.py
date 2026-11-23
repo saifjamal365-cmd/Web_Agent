@@ -175,13 +175,32 @@ SNAPSHOT_JS = r"""
       .slice(0, 12).map(h => clean(h.innerText).slice(0, 100)).filter(Boolean);
   const main = MAIN_CONTENT();
   const text = clean(withShadow(main)).slice(0, opts.textChars || 1500);
+  // The text on screen now. The start of the page is not enough: in a chat or a feed the newest messages are at
+  // the bottom (live run, Google Chat: the agent saw only yesterday's messages and said nothing new came today).
+  let view = '';
+  if (main) {
+    const parts = []; let steps = 0;
+    const tw = document.createTreeWalker(main, NodeFilter.SHOW_TEXT);
+    while (tw.nextNode() && steps++ < 20000) {
+      const s = clean(tw.currentNode.nodeValue); const par = tw.currentNode.parentElement;
+      if (!s || !par || /^(SCRIPT|STYLE|NOSCRIPT)$/.test(par.tagName)) continue;
+      const r = par.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1 || r.bottom <= 0 || r.top >= vh || r.right <= 0 || r.left >= vw) continue;
+      parts.push(s);
+    }
+    view = parts.join(' ');
+    const max = opts.viewChars || 1800;
+    if (view.length > max) view = '…' + view.slice(-max);
+    const tail = view.slice(-150).replace(/^…/, '');
+    if (!tail || text.includes(tail)) view = '';   // already in the start of the page text
+  }
   const captcha = !!document.querySelector('iframe[src*="recaptcha"],iframe[src*="hcaptcha"],iframe[src*="challenges.cloudflare"],#challenge-form,.g-recaptcha,.h-captcha')
       || /verify (that )?you are (a )?human|are you a robot|not a (ro)?bot|made by a human|unusual traffic|press (and|&) hold/i.test(clean(document.body ? document.body.innerText : '').slice(0, 3000));
   const se = document.scrollingElement || document.documentElement;
   const tables = Array.from(document.querySelectorAll('table,[role=table],[role=grid]')).filter(visible)
       .filter(t => t.querySelectorAll('tr,[role=row]').length >= 2 && t.querySelectorAll('td,th,[role=cell],[role=gridcell]').length >= 4).length;
   return {
-    url: location.href, title: document.title, items, heads, text, captcha, tables, total: all.length,
+    url: location.href, title: document.title, items, heads, text, view, captcha, tables, total: all.length,
     dialog: modal ? (clean(modal.innerText) || nameOf(modal) || 'a pop-up').slice(0, 300) : '',
     scroll: {y: Math.round(se.scrollTop), max: Math.max(0, Math.round(se.scrollHeight - vh))},
   };
@@ -204,6 +223,54 @@ READ_JS = r"""
 
 
 SNAPSHOT_JS = SNAPSHOT_JS.replace("MAIN_CONTENT()", MAIN_CONTENT_JS.strip() + "()")
+
+# What scroll moves: the scrolling pane under the middle of the main content (a chat's message list, a mail
+# list), else the page, else the biggest scrolling pane on screen. It is marked so the next calls find it again.
+SCROLL_PICK_JS = r"""
+() => {
+  const vh = innerHeight, vw = innerWidth;
+  document.querySelectorAll('[data-wa-scroll]').forEach(e => e.removeAttribute('data-wa-scroll'));
+  const scrolls = el => { const s = getComputedStyle(el);
+    return /(auto|scroll|overlay)/.test(s.overflowY) && el.scrollHeight > el.clientHeight + 4; };
+  const se = document.scrollingElement || document.documentElement;
+  const main = document.querySelector('main,[role=main]');
+  const box = main && main.getBoundingClientRect();
+  const cx = box && box.width > 50 ? Math.min(vw - 2, Math.max(1, box.left + box.width / 2)) : vw / 2;
+  const cy = box && box.height > 50 ? Math.min(vh - 2, Math.max(1, (Math.max(0, box.top) + Math.min(vh, box.bottom)) / 2)) : vh / 2;
+  let el = document.elementFromPoint(cx, cy), pick = null;
+  while (el && el !== document.body && el !== document.documentElement) {
+    if (scrolls(el)) { pick = el; break; }
+    el = el.parentElement;
+  }
+  if (!pick && se.scrollHeight > se.clientHeight + 4) pick = se;
+  if (!pick) {
+    let best = 0;
+    document.querySelectorAll('*').forEach(e => {
+      if (!scrolls(e)) return;
+      const r = e.getBoundingClientRect();
+      const a = Math.max(0, Math.min(vh, r.bottom) - Math.max(0, r.top)) * Math.max(0, Math.min(vw, r.right) - Math.max(0, r.left));
+      if (a > best) { best = a; pick = e; }
+    });
+  }
+  if (!pick) return null;
+  const doc = pick === se;
+  if (!doc) pick.setAttribute('data-wa-scroll', '1');
+  const r = doc ? {left: 0, top: 0, width: vw, height: vh} : pick.getBoundingClientRect();
+  const lab = doc ? null : (pick.hasAttribute('aria-label') ? pick : pick.closest('[aria-label]'));
+  const name = lab ? (lab.getAttribute('aria-label') || '').trim().slice(0, 60) : '';
+  return {doc, name, top: Math.round(pick.scrollTop), max: Math.max(0, Math.round(pick.scrollHeight - pick.clientHeight)),
+          x: Math.round(Math.min(vw - 2, Math.max(1, r.left + r.width / 2))),
+          y: Math.round(Math.min(vh - 2, Math.max(1, r.top + r.height / 2)))};
+}
+"""
+SCROLL_STATE_JS = r"""
+() => { const el = document.querySelector('[data-wa-scroll]') || document.scrollingElement || document.documentElement;
+  return {top: Math.round(el.scrollTop), max: Math.max(0, Math.round(el.scrollHeight - el.clientHeight))}; }
+"""
+SCROLL_BY_JS = r"""
+(dy) => { const el = document.querySelector('[data-wa-scroll]') || document.scrollingElement || document.documentElement;
+  el.scrollBy(0, dy); }
+"""
 
 # Is this box / radio button / option ticked now? null when the element has no such state.
 STATE_JS = r"""el => {
@@ -286,13 +353,39 @@ def find_passages(text: str, query: str, limit: int = 3500) -> str:
     phrase = query.strip().lower()
     exact = [i for i, ln in enumerate(lines) if phrase and phrase in ln.lower()]
     if exact and (len(phrase) >= 3 or not re.search(r"\w", phrase)):
-        out, size = [f"{len(exact)} line(s) contain exactly \"{query.strip()}\":"], 0
+        out = [f"{len(exact)} line(s) contain exactly \"{query.strip()}\":"]
+        hits = set(exact)
         for i in exact:
-            size += len(lines[i][:600]) + 1
-            if size > limit:
-                out.append(f"... ({len(exact) - len(out) + 1} more)")
-                break
-            out.append(lines[i][:600])
+            line = lines[i][:600]
+            if len(line) < 80:
+                # A short line (a name, a heading) means little alone: add what follows it, such as the message
+                # under a sender's name (live run: Google Chat showed "Mahmoud Ayman Sayed" 4 times, never his message).
+                more, j = [], i + 1
+                while j < len(lines) and len(more) < 3 and j not in hits and sum(map(len, more)) < 300:
+                    if lines[j]:
+                        more.append(lines[j][:300])
+                    j += 1
+                if more:
+                    line += "  ->  " + " | ".join(more)
+            out.append(line)
+        if sum(len(x) + 1 for x in out) > limit:
+            # Too many: keep the first and the LAST ones (in a chat the last are the newest messages; cutting the
+            # end hid exactly the message the person asked about).
+            head, tail, size = [], [], 0
+            for x in out[1:]:
+                if size + len(x) > limit // 3:
+                    break
+                head.append(x)
+                size += len(x) + 1
+            for x in reversed(out[1 + len(head):]):
+                if size + len(x) > limit:
+                    break
+                tail.insert(0, x)
+                size += len(x) + 1
+            skipped = len(out) - 1 - len(head) - len(tail)
+            out = [out[0]] + head + ([f"... ({skipped} more in between) ..."] if skipped else []) + tail
+        if len(exact) > 1:
+            out.append("(In page order: in a chat or a feed the last one is the newest.)")
         return "\n".join(out)
     words = [w for w in re.findall(r"\w+", query.lower()) if len(w) >= 3 or w.isdigit()]
     if not words:
@@ -457,6 +550,9 @@ def format_snapshot(raw: dict) -> Snapshot:
                      "button or link (e.g. 'Add to Cart') gives their refs --")
     if raw.get("text"):
         lines.append("Page text (start): " + raw["text"])
+    if raw.get("view"):
+        lines.append("Text in view now (what is on screen; in a chat the newest messages are at the bottom): "
+                     + raw["view"])
     return Snapshot(url=raw["url"], title=raw.get("title", ""), text="\n".join(lines), refs=refs,
                     captcha=bool(raw.get("captcha")), tables=int(raw.get("tables") or 0))
 
@@ -1290,10 +1386,43 @@ class BrowserSession:
         return self._after_action(before_url, before_pages, before_lines)
 
     def scroll(self, direction: str = "down") -> str:
-        dy = -700 if direction.lower().startswith("up") else 700
-        self.page.mouse.wheel(0, dy)
-        time.sleep(0.4)
-        return f"Scrolled {'up' if dy < 0 else 'down'}."
+        """Scroll the part of the page that scrolls: the page itself, or the inner pane under the middle of the
+        screen (chats, mail, web apps). The wheel used to turn wherever the mouse was, so in Google Chat nothing
+        moved and the agent was told "Scrolled down." anyway."""
+        up = direction.lower().startswith("up")
+        dy = -700 if up else 700
+        word = "up" if up else "down"
+        p = self.page
+        try:
+            t = p.evaluate(SCROLL_PICK_JS)
+        except Exception:
+            t = None
+        if not t:
+            p.mouse.wheel(0, dy)
+            time.sleep(0.4)
+            return f"Scrolled {word}."
+        area = "the page" if t["doc"] else (f'the "{t["name"]}" area' if t.get("name") else "the scrolling area")
+        if (up and t["top"] <= 1) or (not up and t["top"] >= t["max"] - 1):
+            return (f"Could not scroll {word}: {area} is already at the {'top' if up else 'bottom'} "
+                    f"(nothing more {'above' if up else 'below'}).")
+        try:
+            p.mouse.move(t["x"], t["y"])
+            p.mouse.wheel(0, dy)
+            time.sleep(0.4)
+            now = p.evaluate(SCROLL_STATE_JS)
+            if now is not None and abs(now["top"] - t["top"]) < 2:   # the wheel did not reach it: scroll it directly
+                p.evaluate(SCROLL_BY_JS, dy)
+                time.sleep(0.3)
+                now = p.evaluate(SCROLL_STATE_JS)
+        except Exception:
+            now = None
+        if not now:
+            return f"Scrolled {word}."
+        if abs(now["top"] - t["top"]) < 2:
+            return f"Could not scroll {word}: {area} did not move."
+        pct = int(100 * now["top"] / now["max"]) if now["max"] else 100
+        end = " (the bottom)" if now["top"] >= now["max"] - 1 else " (the top)" if now["top"] <= 1 else ""
+        return f"Scrolled {word} {area}: now {pct}% down{end}."
 
     def back(self) -> str:
         before = self.url

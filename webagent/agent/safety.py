@@ -69,6 +69,11 @@ def submit_reason(element: dict) -> str | None:
                                                            " " + _norm(element.get("field", ""))):
         return None
     if not form:
+        # Chat and comment boxes have no <form>: Enter sends the message (live run: Google Chat's box was not
+        # gated at all).
+        hay = name + " " + _norm(element.get("field", ""))
+        if role in ("textbox", "textarea") or re.search(r"\b(message|reply|comment|chat|post|tweet|write)", hay):
+            return f'Pressing Enter sends what you typed in "{element.get("name") or "the message box"}".'
         return None
     return f'Pressing Enter submits the form "{form[:60]}".'
 

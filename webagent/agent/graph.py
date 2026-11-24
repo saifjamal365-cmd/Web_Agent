@@ -396,9 +396,13 @@ def _sent_text(state: AgentState, name: str, args) -> str:
     """The text an approval would send: typed with submit=true, or the last text typed before Enter / Send."""
     if name == "type":
         return args.text
+    if name == "keys":   # "Hello{Enter}" sends "Hello"; a bare "{Ctrl+Enter}" sends what was typed before
+        own = safety.keys_plain_text(args.text)
+        if own:
+            return own
     for s in reversed(state.get("steps") or []):
         if s.get("tool") in ("type", "keys") and s.get("ok", True):
-            return str((s.get("args") or {}).get("text") or "")
+            return safety.keys_plain_text(str((s.get("args") or {}).get("text") or ""))
     return ""
 
 
@@ -417,7 +421,7 @@ def _approved_in_chat(state: AgentState, name: str, args, snap: Snapshot | None 
         if args.key != "Enter":
             return None
     elif name == "keys":
-        if "\n" not in args.text:
+        if not (safety.ENTER_KEY.search(args.text) or safety.SEND_KEYS.search(args.text)):
             return None
     elif not (name == "type" and args.submit):
         return None

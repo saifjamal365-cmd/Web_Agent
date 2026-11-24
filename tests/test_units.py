@@ -450,3 +450,45 @@ def test_enter_in_a_chat_box_without_a_form_needs_approval():
     assert safety.submit_reason(el("History is on", role="textbox")) is not None
     assert safety.submit_reason(el("Search chat", role="input:text")) is None
     assert safety.submit_reason(el("Quantity", role="input:text")) is None
+
+
+def test_send_shortcuts_and_enter_in_message_boxes_need_approval():
+    """Review 24 Nov: keys "{Ctrl+Enter}" in Gmail and "Hello{Enter}" in a chat box sent without approval."""
+    from webagent.browser.session import Snapshot
+    refs = {"e5": {"ref": "e5", "role": "textbox", "name": "Message Body"},           # Gmail compose body
+            "e6": {"ref": "e6", "role": "textbox", "name": "History is on"},          # Google Chat box
+            "e7": {"ref": "e7", "role": "textbox", "name": "Document body"},          # a document editor
+            "e8": {"ref": "e8", "role": "input:search", "name": "Search mail"},
+            "e9": {"ref": "e9", "role": "canvas", "name": "drawing 900x500"}}         # a spreadsheet grid
+    snap = Snapshot(url="https://mail.test", title="", text="", refs={k: {**v} for k, v in refs.items()})
+
+    def kind(text, ref="", last=None):
+        return T.gate("keys", T.validate("keys", {"text": text, "ref": ref}), snap, last).kind
+
+    # send shortcuts, with or without a target
+    for text in ("{Ctrl+Enter}", "{Control+Enter}", "{Cmd+Enter}", "{Meta+Return}", "Thanks!{Ctrl+Enter}", "{Alt+S}"):
+        assert kind(text, "e5") == "approval", text
+        assert kind(text) == "approval", text
+    # Enter where Enter sends: the given box, or the box typed into last when no ref is given
+    for text in ("Hello{Enter}", "Hello\n", "{Enter}", "{Return}"):
+        assert kind(text, "e6") == "approval", text
+        assert kind(text, last=refs["e6"]) == "approval", text
+    # Enter that only starts a new line or searches: no approval
+    assert kind("Line one\nLine two", "e5") == "ok"           # Gmail body: Enter is a new line
+    assert kind("Monday: plan\nTuesday: review", "e7") == "ok"
+    assert kind("invoice{Enter}", "e8") == "ok"
+    assert kind("Date\tProduct\nMon\tMilk\n", "e9") == "ok"   # typing a table into a sheet
+    assert kind("Date\tProduct\nMon\tMilk\n") == "ok"
+    assert kind("{Ctrl+A}{Backspace}", "e6") == "ok"
+
+
+def test_text_approved_in_chat_can_be_sent_with_keys():
+    from webagent.agent.graph import _approved_in_chat
+    q = 'Suggested reply: "Good morning, Eng. Mahmoud!" Do you approve sending it?'
+    asked = {**_step("ask_user", {"question": q}, "The person answered: yes approved"), "n": 2}
+    state = {"steps": [asked]}
+    assert _approved_in_chat(state, "keys", T.validate("keys", {"text": "Good morning, Eng. Mahmoud!{Enter}"}))
+    typed = _step("keys", {"text": "Good morning, Eng. Mahmoud!"}, "Typed.")
+    assert _approved_in_chat({"steps": [asked, typed]}, "keys", T.validate("keys", {"text": "{Ctrl+Enter}"}))
+    # other words are not covered by the yes
+    assert _approved_in_chat(state, "keys", T.validate("keys", {"text": "See you never{Enter}"})) is None

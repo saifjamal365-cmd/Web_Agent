@@ -551,10 +551,10 @@ def gate(name: str, args: BaseModel, snap: Snapshot | None, last_typed: dict | N
         if r or safety.looks_secret(args.text):
             return Gate("refuse", (r or "This text looks like a card or account number.") +
                         " The agent never types passwords, card numbers or codes. Use ask_user so the person can do it.")
-        if el and "\n" in args.text:  # Enter in a form field can send the form
-            r = safety.submit_reason(el)
-            return Gate("approval", r) if r else Gate("ok")
-        return Gate("ok")
+        # A send shortcut, or Enter in a box where Enter sends: without a ref the keys go to what has focus,
+        # which is the box typed into last.
+        r = safety.keys_reason(args.text, el or last_typed)
+        return Gate("approval", r) if r else Gate("ok")
     return Gate("ok")
 
 

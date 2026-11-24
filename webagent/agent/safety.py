@@ -70,12 +70,40 @@ def submit_reason(element: dict) -> str | None:
         return None
     if not form:
         # Chat and comment boxes have no <form>: Enter sends the message (live run: Google Chat's box was not
-        # gated at all).
+        # gated at all). In a document or a mail body Enter only starts a new line.
         hay = name + " " + _norm(element.get("field", ""))
+        if NEW_LINE_BOX.search(hay):
+            return None
         if role in ("textbox", "textarea") or re.search(r"\b(message|reply|comment|chat|post|tweet|write)", hay):
             return f'Pressing Enter sends what you typed in "{element.get("name") or "the message box"}".'
         return None
     return f'Pressing Enter submits the form "{form[:60]}".'
+
+
+# Boxes where Enter starts a new line instead of sending (Gmail's "Message Body", a document editor).
+NEW_LINE_BOX = re.compile(r"\b(body|document|editor|notes?|description|content|bio|draft|article|code)\b")
+# Shortcuts that send or submit wherever the focus is: Ctrl/Cmd+Enter (Gmail, Outlook, Slack, Teams, many forms),
+# Alt+S (Outlook).
+SEND_KEYS = re.compile(r"\{\s*(ctrl|control|cmd|command|meta|win)\s*\+\s*(enter|return)\s*\}|\{\s*alt\s*\+\s*s\s*\}",
+                       re.I)
+ENTER_KEY = re.compile(r"\n|\{\s*(enter|return)\s*\}", re.I)
+
+
+def keys_reason(text: str, element: dict | None) -> str | None:
+    """Why typing these keys needs approval: a send shortcut anywhere, or Enter in a box where Enter sends.
+    Review 24 Nov: keys "{Ctrl+Enter}" in Gmail and "Hello{Enter}" in a chat box sent without approval, because only
+    a raw line break into a given element was checked."""
+    m = SEND_KEYS.search(text or "")
+    if m:
+        return f"The keys {m.group(0)} send or submit what was typed."
+    if ENTER_KEY.search(text or "") and element:
+        return submit_reason(element)
+    return None
+
+
+def keys_plain_text(text: str) -> str:
+    """The words typed by a keys call, without {Key} presses, tabs or line breaks."""
+    return re.sub(r"\s+", " ", re.sub(r"\{[^{}]{1,30}\}", " ", (text or "").replace("\t", " ").replace("\n", " "))).strip()
 
 
 def secret_field_reason(element: dict) -> str | None:

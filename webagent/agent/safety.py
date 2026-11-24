@@ -18,11 +18,20 @@ RISKY_WORDS = [
     "transfer", "withdraw", "deposit", "subscribe", "unsubscribe", "sign up", "register", "create account",
     "book", "book now", "reserve", "donate", "upload", "accept", "agree", "authorize", "authorise", "install",
     "save changes", "cancel subscription", "close account", "log out", "sign out",
+    # Arabic (sites in Arabic: the same buttons must stop for approval). Both hamza spellings, as people type both.
+    "إرسال", "ارسال", "أرسل", "ارسل", "إرسال الرسالة", "ادفع", "دفع", "الدفع", "شراء", "اشتر", "اشتري", "اشتر الآن",
+    "اطلب", "اطلب الآن", "إتمام الطلب", "اتمام الطلب", "إتمام الشراء", "اتمام الشراء", "تأكيد", "تاكيد", "أكد", "اكد",
+    "تأكيد الطلب", "حذف", "احذف", "إزالة", "ازالة", "نشر", "انشر", "اشتراك", "اشترك", "إلغاء الاشتراك",
+    "تسجيل حساب", "إنشاء حساب", "انشاء حساب", "احجز", "حجز", "تبرع", "تحويل", "سحب", "إيداع", "رفع", "تحميل ملف",
+    "أوافق", "اوافق", "موافق", "قبول", "حفظ التغييرات", "تسجيل الخروج", "خروج",
 ]
 # Very common, harmless words that contain or equal a risky word in some contexts.
 SAFE_EXACT = {"search", "go", "next", "previous", "more", "show more", "load more", "filter", "sort", "menu",
               "close", "ok", "back", "home", "login", "log in", "sign in", "continue", "accept all cookies",
-              "reject all", "decline", "reject", "necessary only", "only necessary"}
+              "reject all", "decline", "reject", "necessary only", "only necessary",
+              "بحث", "ابحث", "التالي", "التالية", "السابق", "المزيد", "عرض المزيد", "تحميل المزيد", "تصفية", "ترتيب",
+              "القائمة", "إغلاق", "اغلاق", "رجوع", "الرئيسية", "تسجيل الدخول", "دخول", "متابعة", "رفض", "رفض الكل",
+              "الضرورية فقط"}
 
 _risky_re = re.compile(r"\b(" + "|".join(re.escape(w) for w in sorted(RISKY_WORDS, key=len, reverse=True)) + r")\b",
                        re.I)
@@ -30,7 +39,9 @@ _risky_re = re.compile(r"\b(" + "|".join(re.escape(w) for w in sorted(RISKY_WORD
 SECRET_FIELD = re.compile(
     r"(passw|passcode|pwd|\bpin\b|otp|one.?time|2fa|mfa|totp|verification.?code|security.?code|cvv|cvc|csc|"
     r"card.?num|cc.?num|credit.?card|cardnumber|iban|swift|routing|account.?num|ssn|social.?security|"
-    r"national.?id|passport|tax.?id|secret|api.?key|token)", re.I)
+    r"national.?id|passport|tax.?id|secret|api.?key|token|"
+    r"كلمة (?:ال)?مرور|كلمة (?:ال)?سر|رمز (?:ال)?تحقق|رمز التأكيد|الرمز السري|رقم سري|رقم (?:ال)?بطاقة|"
+    r"رمز (?:ال)?أمان|تاريخ الانتهاء|رقم (?:ال)?هوية|جواز (?:ال)?سفر|رقم (?:ال)?حساب|آيبان|ايبان)", re.I)
 
 
 def _norm(s: str) -> str:
@@ -46,7 +57,8 @@ def risky_reason(element: dict, tool: str = "click") -> str | None:
     if role == "link" and not element.get("form"):
         # Plain links navigate; only flag clearly dangerous link text.
         m = re.search(r"\b(delete|remove|unsubscribe|pay|buy now|checkout|place order|log out|sign out|"
-                      r"cancel subscription|close account|transfer)\b", name, re.I)
+                      r"cancel subscription|close account|transfer|حذف|احذف|إلغاء الاشتراك|ادفع|اشتر الآن|"
+                      r"إتمام الطلب|اتمام الطلب|إتمام الشراء|تسجيل الخروج|تحويل)\b", name, re.I)
         return f'The link "{element.get("name")}" may change something for real ({m.group(1)}).' if m else None
     is_submit = role in ("button", "input:submit", "input:image") or element.get("type") == "submit"
     m = _risky_re.search(name)
@@ -65,8 +77,8 @@ def submit_reason(element: dict) -> str | None:
     form = _norm(element.get("form", ""))
     name = _norm(element.get("name", ""))
     role = element.get("role", "")
-    if role in ("input:search", "searchbox") or re.search(r"search|query|\bq\b|find|filter|lookup", name + " " + form +
-                                                           " " + _norm(element.get("field", ""))):
+    if role in ("input:search", "searchbox") or re.search(r"search|query|\bq\b|find|filter|lookup|بحث|ابحث|تصفية",
+                                                           name + " " + form + " " + _norm(element.get("field", ""))):
         return None
     if not form:
         # Chat and comment boxes have no <form>: Enter sends the message (live run: Google Chat's box was not
@@ -74,14 +86,16 @@ def submit_reason(element: dict) -> str | None:
         hay = name + " " + _norm(element.get("field", ""))
         if NEW_LINE_BOX.search(hay):
             return None
-        if role in ("textbox", "textarea") or re.search(r"\b(message|reply|comment|chat|post|tweet|write)", hay):
+        if role in ("textbox", "textarea") or re.search(r"\b(message|reply|comment|chat|post|tweet|write)|"
+                                                        r"رسال|\bرد\b|الرد|تعليق|دردشة|اكتب", hay):
             return f'Pressing Enter sends what you typed in "{element.get("name") or "the message box"}".'
         return None
     return f'Pressing Enter submits the form "{form[:60]}".'
 
 
 # Boxes where Enter starts a new line instead of sending (Gmail's "Message Body", a document editor).
-NEW_LINE_BOX = re.compile(r"\b(body|document|editor|notes?|description|content|bio|draft|article|code)\b")
+NEW_LINE_BOX = re.compile(r"\b(body|document|editor|notes?|description|content|bio|draft|article|code|"
+                          r"نص الرسالة|مستند|ملاحظات|ملاحظة|وصف|المحتوى|مسودة|مقال)\b")
 # Shortcuts that send or submit wherever the focus is: Ctrl/Cmd+Enter (Gmail, Outlook, Slack, Teams, many forms),
 # Alt+S (Outlook).
 SEND_KEYS = re.compile(r"\{\s*(ctrl|control|cmd|command|meta|win)\s*\+\s*(enter|return)\s*\}|\{\s*alt\s*\+\s*s\s*\}",

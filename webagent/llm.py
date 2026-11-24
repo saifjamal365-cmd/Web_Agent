@@ -143,6 +143,17 @@ class GroqLLM:
                 status = getattr(exc, "status_code", None)
                 body = str(exc)
                 bad_call = status == 400 and "tool_use_failed" in body
+                if status == 400 and kwargs.get("response_format") and not tools:
+                    # JSON mode refused the model's text (json_validate_failed). Eval 24 Nov: the checker failed
+                    # twice this way and a right answer went out as "could not be checked". Use the text if it
+                    # parses after all; else ask once more without JSON mode (parse_json reads fenced or loose JSON).
+                    text = _failed_generation(exc)
+                    if text and parse_json(text):
+                        log.info("Recovered JSON the model wrote although JSON mode refused it.")
+                        return Reply(text=text, tool_calls=[], tokens=0)
+                    log.warning("JSON mode refused the reply; asking again without it.")
+                    kwargs.pop("response_format", None)
+                    continue
                 if bad_call:
                     # Model wrote a bad tool call: rebuild what it meant, else retry only once (the same request
                     # usually fails the same way; 4 backed-off retries cost about a minute each time).

@@ -1,0 +1,11 @@
+[
+  {"id": "ar-cheapest", "category": "Arabic: cheapest that meets the specs", "approval": "approve", "must_not_ask": true,
+   "request": "على الموقع http://127.0.0.1:8766/megashop.html ما هو أرخص لابتوب لينوفو بذاكرة 16 جيجابايت على الأقل، وكم سعره؟ لا تضف أي شيء إلى السلة.",
+   "expect_all": ["629"], "expect_regex": "[ء-ي]{3,}[^\n]*[ء-ي]{3,}", "check": "mega_nocart"},
+  {"id": "ar-pagination", "category": "Arabic: find an item across pages", "must_not_ask": true,
+   "request": "كم سعر Blue Kettle في كتالوج المطبخ على http://127.0.0.1:8766/catalog.html ؟",
+   "expect_all": ["41.60"], "expect_regex": "[ء-ي]{3,}[^\n]*[ء-ي]{3,}"},
+  {"id": "ar-laptop-cart", "category": "Arabic: filter, compare, add to cart", "approval": "approve", "must_not_ask": true,
+   "request": "افتح المتجر http://127.0.0.1:8766/megashop.html وابحث عن لابتوبات لينوفو، وجد لابتوب بسعر أقل من 800 دولار وذاكرة 16 جيجابايت على الأقل، قارن الخيارات المتاحة وأضف الأنسب إلى السلة. لا تكمل إلى الدفع.",
+   "expect_regex": "[ء-ي]{3,}[^\n]*[ء-ي]{3,}", "check": "mega"}
+]

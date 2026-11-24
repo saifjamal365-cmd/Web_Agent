@@ -12,13 +12,24 @@ import re
 
 from webagent.store import db
 
-_WORD = re.compile(r"[a-z0-9]+")
+# Any language's letters (was [a-z0-9]: an Arabic task embedded to all zeros and recalled nothing).
+_WORD = re.compile(r"[^\W_]+")
 _STOP = set("a an the and or of to in on for with at by from is are be this that it as into your you our we "
-            "find get show tell me what how which".split())
+            "find get show tell me what how which "
+            "في من على إلى الى عن مع هذا هذه ذلك التي الذي و أو او ما ماذا كيف هل لي أريد اريد".split())
+_TASHKEEL = re.compile(r"[ً-ْـ]")
+
+
+def _arabic_norm(text: str) -> str:
+    """One spelling for the letters people write in several ways (أ/إ/آ → ا, ى → ي, ة → ه), no short vowels."""
+    text = _TASHKEEL.sub("", text)
+    return text.translate(str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ى": "ي", "ة": "ه"}))
 
 
 def embed(text: str, dim: int = db.EMBED_DIM) -> list[float]:
-    words = [w for w in _WORD.findall((text or "").lower()) if w not in _STOP]
+    words = [w for w in _WORD.findall(_arabic_norm((text or "").lower())) if w not in _STOP]
+    # "the" in Arabic is a prefix (ال): drop it so "السعر" and "سعر" are the same word.
+    words = [w[2:] if w.startswith("ال") and len(w) > 4 else w for w in words]
     vec = [0.0] * dim
     feats = words + [f"{a}_{b}" for a, b in zip(words, words[1:])]
     for f in feats:

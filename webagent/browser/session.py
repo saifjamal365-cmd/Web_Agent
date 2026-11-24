@@ -802,7 +802,9 @@ class BrowserSession:
 
     NO_RESULTS = re.compile(r"\b(no (messages|results|items|products|matches|emails|records|conversations) "
                             r"(matched|found|match)|did not match any|no results (for|found)|"
-                            r"(found|showing|there are) 0 (results|items|matches)|0 results (for|found))\b", re.I)
+                            r"(found|showing|there are) 0 (results|items|matches)|0 results (for|found)|"
+                            r"لا توجد نتائج|لم يتم العثور على|لم نعثر على|لا نتائج|لا توجد (رسائل|منتجات|عناصر)|"
+                            r"0 نتيجة|٠ نتيجة)\b", re.I)
 
     def _no_results_line(self) -> str:
         try:

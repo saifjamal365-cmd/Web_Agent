@@ -98,6 +98,11 @@
   #files .f button { border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 0 0 0 4px; }
   .dl { font-size: 13px; padding: 6px 0; } .dl a { margin-right: 10px; }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; height: auto; } #chat { min-height: 50vh; } }
+  /* Arabic (and any right-to-left text): each paragraph takes the direction of its own first letter, so an Arabic
+     question, answer or plan step reads right to left while English stays left to right. */
+  .msg, .plan li, .step .why, .step .res, .ask-card, .watch .wq, textarea, input[type=text] {
+    unicode-bidi: plaintext; text-align: start; }
+  .plan ol { padding-left: 0; padding-inline-start: 20px; }
 </style>
 </head>
 <body>
@@ -116,7 +121,7 @@
       <div id="watches" hidden></div>
       <div id="files" title="Files the agent can attach to forms (upload_file)"></div>
       <form id="ask">
-        <textarea id="q" placeholder="Tell the agent what to do on the web… (Enter to send, Shift+Enter for a new line)"></textarea>
+        <textarea id="q" dir="auto" placeholder="Tell the agent what to do on the web… (Enter to send, Shift+Enter for a new line)"></textarea>
         <div class="sendcol">
           <select id="every" title="Run once, or repeat as a watch and tell me when the answer changes">
             <option value="0">Once</option><option value="60">Every hour</option>
@@ -203,7 +208,7 @@ function renderDetail(d) {
   $("#tstatus").innerHTML = badge(d.status);
   $("#tinfo").textContent = ` ${d.steps_count} steps${d.current_url ? " · " + d.current_url : ""}`;
   $("#cancel").hidden = !["queued", "running", "waiting_approval", "waiting_user"].includes(d.status);
-  $("#plan").innerHTML = (d.plan || []).length ? `<h3>PLAN</h3><ol>${d.plan.map(p => `<li>${esc(p)}</li>`).join("")}</ol>` : "";
+  $("#plan").innerHTML = (d.plan || []).length ? `<h3>PLAN</h3><ol dir="auto">${d.plan.map(p => `<li>${esc(p)}</li>`).join("")}</ol>` : "";
   const steps = d.steps || [];
   $("#steps").innerHTML = steps.length ? steps.slice().reverse().map(s => {
     const args = Object.entries(s.args || {}).map(([k, v]) => `${k}=${typeof v === "string" ? JSON.stringify(v.length > 80 ? v.slice(0, 80) + "…" : v) : JSON.stringify(v)}`).join(" ");

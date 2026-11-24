@@ -492,3 +492,249 @@ def test_text_approved_in_chat_can_be_sent_with_keys():
     assert _approved_in_chat({"steps": [asked, typed]}, "keys", T.validate("keys", {"text": "{Ctrl+Enter}"}))
     # other words are not covered by the yes
     assert _approved_in_chat(state, "keys", T.validate("keys", {"text": "See you never{Enter}"})) is None
+
+
+# ---------------------------------------------------------------- fixes 1-3 (24 Nov) and Arabic
+
+def _ex(url, more=True):
+    res = "From " + url + ":\n- Aero 14: $650" + ("\nThis list goes on: the page has a Next / Show more control." if more else "")
+    return _step("extract", {"what": "laptops: name, price"}, res, url=url)
+
+
+def test_whole_list_answer_from_page_one_is_sent_back():
+    from webagent.agent.graph import _code_check
+    page1 = "https://shop.test/search?q=laptop"
+    state = {"task": "Find the cheapest laptop", "answer": "The cheapest laptop is Aero 14 at $650.",
+             "steps": [_ex(page1)]}
+    problem, extra = _code_check(state)
+    assert problem and problem["fix"] == "work" and "goes on" in problem["problem"] and extra == {}
+    # opened page 2 of the same list: fine
+    state["steps"] = [_ex(page1), _ex("https://shop.test/search?q=laptop&page=2", more=False)]
+    assert _code_check(state) == ({}, {})
+    # "Show more" loaded more rows on the same page: fine
+    state["steps"] = [_ex(page1), _step("click", {"ref": "e9"}, "New text on the page: Zen 13 $590", url=page1)]
+    assert _code_check(state) == ({}, {})
+    # the answer limits itself to what was seen: fine
+    state["steps"] = [_ex(page1)]
+    state["answer"] = "Of the first 20 results, the cheapest is Aero 14 at $650."
+    assert _code_check(state) == ({}, {})
+    # a task that does not need the whole list: fine
+    assert _code_check({"task": "Open the Aero 14 page", "answer": "Opened it: $650.", "steps": [_ex(page1)]}) == ({}, {})
+
+
+def test_arabic_whole_list_task_is_checked_too():
+    from webagent.agent.graph import _code_check
+    state = {"task": "ابحث عن أرخص لابتوب", "answer": "أرخص لابتوب هو Aero 14 بسعر 650$.",
+             "steps": [_ex("https://shop.test/search?q=laptop")]}
+    assert _code_check(state)[0]
+
+
+def test_nothing_new_gets_one_second_look():
+    from webagent.agent.graph import _code_check
+    for task, answer in [("Did Ahmad send me a new message?", "No, Ahmad has not sent any new message."),
+                         ("Any new emails?", "There are no new emails."),
+                         ("هل أرسل لي أحمد رسالة جديدة؟", "لا، لم يرسل أحمد أي رسالة جديدة."),
+                         ("هل يوجد جديد في البريد؟", "لا جديد في البريد.")]:
+        problem, extra = _code_check({"task": task, "answer": answer, "steps": []})
+        assert problem and extra == {"second_look": True}, task
+        # after the second look the answer goes on to the normal check
+        assert _code_check({"task": task, "answer": answer, "steps": [], "second_look": True}) == ({}, {})
+    # an action the person said no to is not a reading of the page
+    st = {"task": "Reply to Ahmad's message", "answer": "I did not send the reply because you said no.",
+          "steps": [], "rejected": [{"key": "x"}]}
+    assert _code_check(st) == ({}, {})
+    # a normal answer is not touched
+    assert _code_check({"task": "Any new emails?", "answer": "Yes: 2 new emails, the newest from Sara at 10:02.",
+                        "steps": []}) == ({}, {})
+
+
+def test_extract_hint_is_not_given_for_a_previous_page_arrow():
+    import inspect
+    src = inspect.getsource(T)
+    assert "[›»>]|التالي" in src
+
+
+@pytest.mark.parametrize("name", ["إرسال", "ارسال", "اشتر الآن", "إتمام الطلب", "تأكيد الطلب", "حذف الحساب", "ادفع",
+                                  "نشر", "اشترك", "احجز الآن"])
+def test_arabic_risky_buttons_need_approval(name):
+    assert safety.risky_reason(el(name)) is not None
+
+
+@pytest.mark.parametrize("name", ["بحث", "التالي", "عرض المزيد", "رفض", "تسجيل الدخول", "إغلاق", "أضف إلى السلة",
+                                  "لابتوب لينوفو"])
+def test_arabic_safe_buttons_do_not(name):
+    assert safety.risky_reason(el(name)) is None
+
+
+def test_arabic_secret_fields_search_and_chat_boxes():
+    assert safety.secret_field_reason(el("كلمة المرور", role="textbox"))
+    assert safety.secret_field_reason(el("رقم البطاقة", role="textbox"))
+    assert safety.secret_field_reason(el("رمز التحقق", role="textbox"))
+    assert safety.secret_field_reason(el("الاسم الكامل", role="textbox")) is None
+    assert safety.submit_reason(el("ابحث في المتجر", role="textbox", form="f")) is None
+    assert safety.submit_reason(el("اكتب رسالة", role="input:text"))
+    assert safety.risky_reason(el("حذف", role="link"))
+
+
+def test_arabic_yes_and_no_answers():
+    from webagent.agent.graph import _is_yes
+    for a in ["نعم", "نعم أرسلها", "موافق", "أرسلها", "تمام", "حسنا", "اكيد", "yes"]:
+        assert _is_yes(a), a
+    for a in ["لا", "لا تبعث", "نعم لكن غيّر التحية", "انتظر", "no"]:
+        assert not _is_yes(a), a
+
+
+def test_asking_for_login_details_in_arabic_is_refused():
+    assert T.ASKS_FOR_LOGIN.search("ما هي كلمة المرور الخاصة بك؟")
+    assert T.ASKS_FOR_LOGIN.search("أرسل لي رمز التحقق")
+    assert T.ASKS_FOR_LOGIN.search("ما هو البريد الإلكتروني لحساب أمازون؟")
+    assert not T.ASKS_FOR_LOGIN.search("هل تريد اللون الأسود أم الأبيض؟")
+
+
+def test_no_results_in_arabic():
+    from webagent.browser.session import BrowserSession
+    assert BrowserSession.NO_RESULTS.search("لا توجد نتائج لـ لابتوب")
+    assert BrowserSession.NO_RESULTS.search("لم يتم العثور على أي منتج")
+
+
+def test_memory_embeds_arabic_and_matches_spellings():
+    v = memory.embed("ابحث عن أرخص لابتوب في المتجر")
+    assert any(v)
+    a, b = memory.embed("الأسعار في صفحة المنتج"), memory.embed("اسعار صفحة منتج")
+    assert sum(x * y for x, y in zip(a, b)) > 0.5
+
+
+def test_checker_that_fails_twice_never_passes_the_answer_as_checked(monkeypatch):
+    from types import SimpleNamespace
+    from webagent.agent import graph as G
+    calls = []
+    monkeypatch.setattr(G, "_chat_json", lambda *a, **k: calls.append(1) or {})
+
+    def snap():
+        raise RuntimeError("no page")
+    ctx = SimpleNamespace(on_step=lambda s: None, browser=SimpleNamespace(url="https://shop.test/", snapshot=snap))
+    monkeypatch.setitem(G.CONTEXTS, "t-check", ctx)
+    out = G.check({"task": "Price of Aero 14?", "answer": "$650", "steps": [], "notes": []},
+                  {"configurable": {"thread_id": "t-check"}})
+    assert len(calls) == 2                                   # tried once more
+    assert out["status"] == "done" and "could not be checked" in out["answer"]
+    assert out["steps"][-1]["result"] == "Could not run the check."
+
+
+# ---------------------------------------------------------------- the agent keeps what it read (24 Nov)
+
+def _n(step, n):
+    return {**step, "n": n}
+
+
+def test_every_list_read_stays_in_full_for_the_next_turns():
+    from webagent.agent.graph import _render
+    p1, p2 = "https://shop.test/s?q=laptop", "https://shop.test/s?q=laptop&page=2"
+    page1 = "From " + p1 + ":\n" + "\n".join(f"| Laptop {i} | ${500 + i} | 16 GB |" for i in range(30)) + \
+            "\nThis list goes on: the page has a Next / Show more control."
+    page2 = "From " + p2 + ":\n| ThinkPad T14 | $629.00 | 16 GB |"
+    steps = [_n(_step("extract", {"question": "every laptop: name, price, RAM"}, page1, url=p1), 1),
+             _n(_step("click", {"ref": "e9"}, "Now at " + p2, url=p2), 2),
+             _n(_step("extract", {"question": "every laptop: name, price, RAM"}, page2, url=p2), 3)]
+    steps += [_n(_step("scroll", {"direction": "down"}, "Scrolled.", url=p2), n) for n in range(4, 20)]
+    text = _render({"task": "cheapest laptop with 16 GB", "steps": steps, "current_url": p2}, "(page)")
+    assert "PAGES YOU ALREADY READ" in text
+    assert "Laptop 29 | $529" in text                     # page 1 is still there, 18 steps later
+    assert "ThinkPad T14 | $629.00" in text
+    assert "the list goes on" in text and "the end of this list" in text
+
+
+def test_reading_the_same_unchanged_page_again_is_refused():
+    from webagent.agent.graph import _read_before
+    p1, p2 = "https://shop.test/s", "https://shop.test/s?page=2"
+    q = "every laptop: name, price, RAM"
+    ex = _n(_step("extract", {"question": q}, "From x:\n| A | $1 |", url=p1), 1)
+    nav = [_n(_step("click", {"ref": "e9"}, "Now at " + p2, url=p2), 2),
+           _n(_step("back", {}, "Went back to " + p1, url=p1), 3)]
+    assert _read_before({"steps": [ex] + nav}, p1, q) == 1
+    assert _read_before({"steps": [ex] + nav}, p1, "every phone: name, price") is None    # another question
+    assert _read_before({"steps": [ex] + nav}, p2, q) is None                            # another page
+    # a filter on that page changed it: reading again is fine
+    flt = _n(_step("click", {"ref": "e4"}, "e4 \"16 GB\" is now checked.", url=p1), 4)
+    assert _read_before({"steps": [ex] + nav + [flt]}, p1, q) is None
+    # the first read found nothing (still loading): fine
+    empty = _n(_step("extract", {"question": q}, "From x:\nNothing found.", url=p1), 1)
+    assert _read_before({"steps": [empty]}, p1, q) is None
+
+
+def test_page_two_read_before_page_one_counts_as_the_whole_list():
+    from webagent.agent.graph import _code_check
+    p1, p2 = "https://shop.test/s?ram=16&page=1", "https://shop.test/s?ram=16&page=2"
+    state = {"task": "the cheapest laptop", "answer": "The cheapest is T14 at $629.",
+             "steps": [_ex(p2, more=False), _ex(p1, more=True)]}
+    assert _code_check(state) == ({}, {})
+
+
+def test_checker_claim_of_an_action_no_step_shows_is_ignored():
+    from webagent.agent.graph import _claims_unseen_action
+    read = [_n(_step("go_to", {"url": "u"}, "Opened u"), 1),
+            _n(_step("extract", {"question": "laptops"}, "| T14 | $629 | Add to Cart |"), 2),
+            _n(_step("click", {"ref": "e9"}, "Now at https://shop.test/s?page=2"), 3)]
+    claim = "The agent added an item to the cart (step 2), which the task forbids."
+    assert _claims_unseen_action({"steps": read}, claim)
+    # a real add leaves a result: the claim stands
+    added = read + [_n(_step("click", {"ref": "e5"}, "New text on the page: Added to Cart: T14"), 4)]
+    assert not _claims_unseen_action({"steps": added}, claim)
+    # an unknown click result: do not overrule the checker
+    other = read + [_n(_step("click", {"ref": "e5"}, "New text on the page: Cart (1)"), 4)]
+    assert not _claims_unseen_action({"steps": other}, claim)
+    # other problems are not touched
+    assert not _claims_unseen_action({"steps": read}, "The answer does not give the price.")
+
+
+def test_json_mode_refusal_is_recovered_or_asked_again():
+    from types import SimpleNamespace
+    from webagent.llm import GroqLLM
+
+    class Refused(Exception):
+        status_code = 400
+
+        def __init__(self, gen):
+            super().__init__("json_validate_failed")
+            self.body = {"error": {"code": "json_validate_failed", "failed_generation": gen}}
+
+    def ok(text):
+        msg = SimpleNamespace(content=text, tool_calls=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)], usage=SimpleNamespace(total_tokens=5))
+
+    def make(gen, then):
+        seen = []
+
+        def create(**kw):
+            seen.append("response_format" in kw)
+            if "response_format" in kw:
+                raise Refused(gen)
+            return ok(then)
+        llm = GroqLLM.__new__(GroqLLM)
+        llm.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        llm.model, llm.retries = "openai/gpt-oss-120b", 2
+        return llm, seen
+
+    # the refused text is JSON after all (wrapped in words): used as it is, no second call
+    llm, seen = make('Here: {"ok": true}', "unused")
+    assert parse_json(llm.chat([], json_mode=True).text) == {"ok": True} and seen == [True]
+    # not JSON: asked once more without JSON mode
+    llm, seen = make("**Cheapest:** T14 $629", '```json\n{"ok": false, "fix": "answer"}\n```')
+    assert parse_json(llm.chat([], json_mode=True).text)["ok"] is False and seen == [True, False]
+
+
+def test_going_back_and_forth_between_two_pages_is_stopped():
+    from webagent.agent.graph import _repeat_reason
+    p1, p2 = "https://shop.test/s?page=1", "https://shop.test/s?page=2"
+    hops = [_n(_step("click", {"ref": "e178" if i % 2 == 0 else "e174"}, "Now at " + (p2 if i % 2 == 0 else p1),
+                     url=p2 if i % 2 == 0 else p1), i + 1) for i in range(4)]
+    r = _repeat_reason({"steps": hops}, "click", {"ref": "e178"}, p1)
+    assert r and "back and forth" in r
+    assert _repeat_reason({"steps": hops}, "extract", {"question": "laptops"}, p1) is None    # reading is fine
+    # three pages in a row (page 1, 2, 3, 4) is normal paging, not ping-pong
+    walk = [_n(_step("click", {"ref": "e178"}, f"Now at p{i}", url=f"https://shop.test/s?page={i}"), i)
+            for i in range(1, 5)]
+    assert _repeat_reason({"steps": walk}, "click", {"ref": "e178"}, "https://shop.test/s?page=4") is None
+    # a read in between breaks the loop
+    mixed = hops[:3] + [_n(_step("extract", {"question": "x"}, "From p1:\n| A |", url=p1), 4)]
+    assert _repeat_reason({"steps": mixed}, "click", {"ref": "e178"}, p1) is None

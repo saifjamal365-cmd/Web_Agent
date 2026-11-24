@@ -10,6 +10,7 @@ Writes data/eval/lab-<time>-<label>.md and .json.
 from __future__ import annotations
 
 import argparse
+import os
 import functools
 import http.server
 import json
@@ -308,4 +309,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # The report is written; some library thread (MLflow, the HTTP client) kept the process alive after main()
+    # returned, so a chained second run never started (24 Nov, twice). Exit hard after flushing.
+    code = main()
+    sys.stdout.flush(); sys.stderr.flush()
+    os._exit(code)

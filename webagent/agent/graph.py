@@ -70,6 +70,7 @@ class AgentState(TypedDict, total=False):
     salvaged: bool            # the answer was written from the notes after the agent got stuck
     login_failed: list[str]   # sites whose login the person could not save: do not ask again
     tool_groups: list[str]    # extra tool groups switched on for this task (see tools.GROUPS)
+    second_look: bool         # a "nothing new" answer was sent back once for a fresh read
 
 
 @dataclass
@@ -161,7 +162,8 @@ def recall(state: AgentState, config) -> dict:
     out: dict[str, Any] = {"lessons": lessons, "domains": domains, "started": time.time(), "status": "running",
                            "tool_groups": sorted(set(state.get("tool_groups") or []) | T.task_groups(state["task"])),
                            "notes": state.get("notes") or [], "steps": state.get("steps") or [],
-                           "step_count": state.get("step_count", 0), "checks": 0, "reflections": 0, "feedback": ""}
+                           "step_count": state.get("step_count", 0), "checks": 0, "reflections": 0, "feedback": "",
+                           "second_look": False}
     if state.get("start_url"):
         r = safety.domain_reason(state["start_url"])
         if not r:
@@ -213,6 +215,68 @@ def _done_so_far(state: AgentState) -> list[str]:
     return out[-8:]
 
 
+READ_TOOLS = ("extract", "read_table")
+LIST_GOES_ON = "This list goes on"
+
+
+def _pages_read(state: AgentState, keep: int = 6, cap: int = 1800) -> str:
+    """Every list the agent already extracted, in full, so it never has to open a page again to remember it.
+    Eval 24 Nov: older results were cut to 300 characters, so after reading page 1 and page 2 the agent no longer
+    saw page 1's table, went back "to make sure", then to page 2 again, ~30 times (41 steps, 350k tokens)."""
+    steps = state.get("steps") or []
+    latest: dict[tuple, dict] = {}
+    for s in steps:
+        if s.get("tool") in READ_TOOLS and s.get("ok", True) and s.get("result"):
+            args = s.get("args") or {}
+            latest[(s.get("url") or "", str(args.get("question") or args.get("what") or ""))] = s
+    if not latest:
+        return ""
+    last_n = steps[-1].get("n") if steps else None
+    entries = sorted(latest.values(), key=lambda s: s.get("n") or 0)[-keep:]
+    blocks, urls = [], []
+    for s in entries:
+        res = str(s.get("result") or "")
+        goes_on = LIST_GOES_ON in res
+        res = res.split("\n" + LIST_GOES_ON)[0].split("\nIf the page does show a list")[0].strip()
+        urls.append(s.get("url") or "")
+        tag = ("the list goes on: there is a Next / Show more page after this one" if goes_on
+               else "no Next / Show more here: the end of this list")
+        body = "(shown in full below as the LAST RESULT)" if s.get("n") == last_n else (
+            res[:cap] + (" ..." if len(res) > cap else ""))
+        blocks.append(f"[step {s.get('n')}] {s.get('url')} ({tag}):\n{body}")
+    out = ("PAGES YOU ALREADY READ (real results, kept in full; a 'cheapest' or 'best' inside one result is for THAT "
+           "page only: compare across all of them). Never open these pages again just to re-read them. If together "
+           "they answer the task, note the answer and call finish now (or do the task's action).\n"
+           + "\n".join(blocks))
+    cur = state.get("current_url") or ""
+    if steps and steps[-1].get("tool") not in READ_TOOLS and cur in urls:
+        out += (f"\nYou are back on {cur}, a page you already read above: use what you read; do not extract it "
+                "again unless the page has changed.")
+    return out
+
+
+# Steps that only move around or look: they never change what a page lists.
+_LOOK_ONLY = {"go_to", "back", "switch_tab", "find_in_page", "scroll", "note", "read_page", "look", "extract",
+              "read_table", "hover", "check", "reflect", "recall", "model"}
+
+
+def _read_before(state: AgentState, url: str, question: str) -> int | None:
+    """The step that already extracted the same thing from this page, if nothing on the page changed since."""
+    steps = state.get("steps") or []
+    q = _norm_text(question)
+    for i in range(len(steps) - 1, -1, -1):
+        s = steps[i]
+        if (s.get("tool") == "extract" and s.get("ok", True) and s.get("url") == url
+                and _norm_text(str((s.get("args") or {}).get("question") or "")) == q):
+            if "Nothing found" in str(s.get("result") or "")[:400]:   # the page may still have been loading
+                return None
+            later = [t for t in steps[i + 1:] if t.get("url") == url]
+            changed = any(t.get("tool") not in _LOOK_ONLY and not (
+                t.get("tool") == "click" and str(t.get("result") or "").startswith("Now at")) for t in later)
+            return None if changed else s.get("n")
+    return None
+
+
 def _render(state: AgentState, snap_text: str, max_steps: int | None = None) -> str:
     parts = [f"TASK: {state['task']}", _today_line()]
     if state.get("history"):
@@ -234,6 +298,9 @@ def _render(state: AgentState, snap_text: str, max_steps: int | None = None) -> 
                      "\nIf this completes the task's action, the next step is finish (a cart: check it once, then "
                      "finish with the item, its price, why it fits, and the other options from your results).")
     recent = (state.get("steps") or [])[-RECENT_STEPS:]
+    read = _pages_read(state)
+    if read:
+        parts.append(read)
     if recent:
         lines = []
         for s in recent:
@@ -274,10 +341,12 @@ def decide(state: AgentState, config) -> dict:
         return {"status": "cancelled", "answer": "Cancelled by the person.", "pending": None}
     if state.get("step_count", 0) >= ctx.max_steps:
         return {"status": "failed", "pending": None,
-                "answer": f"Stopped after {ctx.max_steps} steps without finishing. " + _notes_summary(state)}
+                "answer": (f"توقفت بعد {ctx.max_steps} خطوة دون إنهاء المهمة. " if _arabic(state) else
+                           f"Stopped after {ctx.max_steps} steps without finishing. ") + _notes_summary(state)}
     if time.time() - state.get("started", time.time()) > ctx.max_seconds:
         return {"status": "failed", "pending": None,
-                "answer": f"Stopped after {ctx.max_seconds // 60} minutes without finishing. " + _notes_summary(state)}
+                "answer": (f"توقفت بعد {ctx.max_seconds // 60} دقيقة دون إنهاء المهمة. " if _arabic(state) else
+                           f"Stopped after {ctx.max_seconds // 60} minutes without finishing. ") + _notes_summary(state)}
 
     browser = ctx.browser
     # After a worker restart the browser is new: go back to where the task was.
@@ -340,16 +409,24 @@ def decide(state: AgentState, config) -> dict:
             "decision": None, "current_url": browser.url}
 
 
+def _arabic(state: AgentState) -> bool:
+    """The person wrote the task in Arabic: the system's own messages to them are in Arabic too."""
+    return len(re.findall(r"[ء-ي]", state.get("task") or "")) >= 3
+
+
 def _notes_summary(state: AgentState) -> str:
     notes = state.get("notes") or []
     if not notes:
         return ""
-    return "What was found so far: " + "; ".join(f"{n['fact']} ({n['source']})" for n in notes[-6:])
+    return ("ما تم العثور عليه حتى الآن: " if _arabic(state) else "What was found so far: ") + "; ".join(f"{n['fact']} ({n['source']})" for n in notes[-6:])
 
 
 YES = re.compile(r"^\W*(yes|yeah|yep|yup|ok|okay|sure|approve[ds]?|i approve|go ahead|send( it)?|do it|confirm(ed)?|"
-                 r"agreed?|correct|right|fine|good|perfect|نعم|موافق|تمام|اوكي)\b", re.I)
-NOT_YES = re.compile(r"\b(no|not|don'?t|do not|never|wait|stop|change|instead|but)\b|لا", re.I)
+                 r"agreed?|correct|right|fine|good|perfect|نعم|ايوه|أيوه|ايوا|أجل|اجل|موافق|موافقة|أوافق|اوافق|تمام|"
+                 r"اوكي|أوكي|حسنا|حسناً|أكيد|اكيد|طيب|ماشي|أرسلها|ارسلها|أرسله|ارسله|أرسل|ارسل|نفذ|نفّذ|تابع)\b", re.I)
+# "لا" only as its own word: as a bare substring it also matched inside other words.
+NOT_YES = re.compile(r"\b(no|not|don'?t|do not|never|wait|stop|change|instead|but|لا|لأ|ليس|لكن|بس|انتظر|توقف|"
+                     r"غير|غيّر|عدّل|عدل|بدل|بدلا|بدلاً|مش|ما تبعث|لا ترسل)\b", re.I)
 
 
 def _answers(state: AgentState) -> list[tuple[int, str, str]]:
@@ -415,7 +492,7 @@ def _approved_in_chat(state: AgentState, name: str, args, snap: Snapshot | None 
             label = str(snap.element(args.ref).get("name") or "") if snap is not None else ""
         except BrowserError:
             label = ""
-        if not re.search(r"\b(send|reply|post|comment)\b", label, re.I):
+        if not re.search(r"\b(send|reply|post|comment|إرسال|ارسال|أرسل|ارسل|رد|الرد|نشر|انشر|تعليق)\b", label, re.I):
             return None
     elif name == "press":
         if args.key != "Enter":
@@ -508,6 +585,12 @@ def gate(state: AgentState, config) -> dict:
         again = _asked_before(state, args.question)
         if again:
             return {"decision": {"refused": again}}
+    if p["name"] == "extract":
+        n = _read_before(state, ctx.browser.url, args.question)
+        if n:
+            return {"decision": {"refused": f"You already extracted this from this page at step {n} and the page has "
+                                            "not changed since: its result is under PAGES YOU ALREADY READ. Use it. "
+                                            "If the pages you read answer the task, note the answer and finish."}}
     g = T.gate(p["name"], args, ctx.snap, state.get("last_typed"), desktop=ctx.env.desktop)
     if g.kind == "ok":
         return {"decision": {"approved": True}}
@@ -547,6 +630,18 @@ REPEAT_OK = {"scroll", "press", "back", "finish", "give_up", "ask_user"}  # repe
 META_TOOLS = {"recall", "check", "reflect", "learn", "model"}
 
 
+def _ping_pong(recent: list[dict]) -> bool:
+    """The last 4 steps only moved between the same two pages (A, B, A, B). Eval 24 Nov: Next / Previous clicked
+    ~25 times between page 1 and page 2 without one extract; each click reached a 'new' page, so the same-action
+    guard never fired."""
+    if len(recent) < 4:
+        return False
+    moves = all(s.get("ok", True) and (s.get("tool") in ("back", "go_to", "switch_tab") or (
+        s.get("tool") == "click" and str(s.get("result") or "").startswith("Now at"))) for s in recent)
+    urls = [s.get("url") for s in recent]
+    return moves and len(set(urls)) == 2 and urls[0] == urls[2] and urls[1] == urls[3] and urls[0] != urls[1]
+
+
 def _repeat_reason(state: AgentState, name: str, raw_args: dict | None, url: str) -> str | None:
     """In code, not only in the prompt: the same action on the same page a 3rd time, after it already gave the
     same result twice, cannot help. Refuse it so the model must try something else."""
@@ -564,7 +659,12 @@ def _repeat_reason(state: AgentState, name: str, raw_args: dict | None, url: str
                     "it again: read the page you are on, find the right link or value on it, or finish and say what "
                     "is missing. Never build an address from a value that ends with '…' (it was cut).")
     recent =[s for s in (state.get("steps") or []) if s.get("tool") not in META_TOOLS][-4:]
-    same = [s for s in recent if s.get("tool") == name and (s.get("args") or {}) == args and s.get("url") == url
+    if name in ("click", "back", "go_to", "switch_tab") and _ping_pong(recent):
+        a, b = recent[-2].get("url"), recent[-1].get("url")
+        return (f"You went back and forth between {a} and {b} four times without reading them. Stop moving: "
+                "extract what you need from the page you are on (or use PAGES YOU ALREADY READ), note it, then "
+                "finish or act.")
+    same =[s for s in recent if s.get("tool") == name and (s.get("args") or {}) == args and s.get("url") == url
             and s.get("ok", True) and not str(s.get("result") or "").startswith("Refused")]
     if len(same) >= 2 and same[-1].get("result") == same[-2].get("result"):
         return ("You already did exactly this twice on this page and it changed nothing. Do something different: "
@@ -695,9 +795,127 @@ def reflect(state: AgentState, config) -> dict:
     return out
 
 
+# Answers that need the WHOLE list: "the cheapest", "the best", "the only one", "all of them" (English and Arabic).
+WHOLE_LIST = re.compile(
+    r"\b(cheapest|lowest|least expensive|most expensive|highest|best|top|most|least|only|all|every|none|no other|"
+    r"compare|comparison)\b|"
+    r"\b(أرخص|الأرخص|اقل|أقل|الأقل|أفضل|افضل|الأفضل|أعلى|الأعلى|أغلى|الأغلى|الوحيد|الوحيدة|كل|جميع|قارن|مقارنة)\b",
+    re.I)
+# "Nothing new": the answer to a watch or a "did X send anything?" question that was wrong in a live run.
+NOTHING_NEW = re.compile(
+    r"\b(no|not any|nothing|none)\b[^.\n]{0,40}\b(new|recent|unread|newer)\b|"
+    r"\b(has not|hasn't|have not|haven't|did not|didn't)\b[^.\n]{0,30}\b(sent|send|replied|reply|messaged|written|"
+    r"write|posted|emailed|answered)\b|"
+    r"\bno (new |recent |unread )?(messages?|emails?|mails?|replies|posts|updates|notifications)\b|"
+    r"\b(لا|ليس)\b[^.\n]{0,30}\b(جديد|جديدة|رسائل|رسالة)\b|\bلم\s+(يرسل|ترسل|يرد|ترد|يصل|تصل|يكتب|يصلني|تصلني)\b|"
+    r"\bلا جديد\b", re.I)
+# Tasks where "nothing new" can be a wrong reading of the page: messages, mail, feeds, "anything new?".
+ABOUT_NEW = re.compile(
+    r"\b(new|newest|latest|recent|unread|last|any|messages?|e?mails?|inbox|chat|replied|reply|sent|send|posted|"
+    r"notifications?|watch)\b|رسال|بريد|جديد|آخر|اخر|محادث|دردش|\bرد\b|أرسل|ارسل|إشعار", re.I)
+# The answer itself limits a whole-list claim to what was seen ("the cheapest of the first 20 results").
+LIMITED = re.compile(r"\b(first|top) \d+ (results|items|products|listings)|\bon (the first|page 1|this) page\b|"
+                     r"\b(of|among) the (\d+ )?(results|items|products) (shown|seen|on (the first|this) page)\b|"
+                     r"في الصفحة الأولى|أول \d+ (نتيجة|نتائج|منتج)", re.I)
+
+
+def _same_list(a: str, b: str) -> bool:
+    """Two addresses of one list: the same site and path (page=2, ?start=20 ...)."""
+    from urllib.parse import urlparse
+    pa, pb = urlparse(a or ""), urlparse(b or "")
+    return bool(pa.netloc) and pa.netloc == pb.netloc and pa.path == pb.path and a != b
+
+
+def _list_not_followed(state: AgentState) -> str:
+    """The address of a list that the extract tool said goes on (Next / Show more) and that the agent never went
+    past. Eval 24 Nov: "the cheapest laptop" was answered from page 1; page 2 had a cheaper one."""
+    steps = state.get("steps") or []
+    open_list = ""
+    for i, s in enumerate(steps):
+        if s.get("tool") != "extract" or "This list goes on" not in str(s.get("result") or ""):
+            continue
+        u = s.get("url") or ""
+        # Another page of the same list read EARLIER counts too (eval 24 Nov: page 2 was read first, then page 1,
+        # and page 1's "goes on" was flagged although every page had been read).
+        followed = any(t.get("tool") in READ_TOOLS and t.get("ok", True) and _same_list(u, t.get("url") or "")
+                       for t in steps[:i])
+        for t in steps[i + 1:]:
+            res = str(t.get("result") or "")
+            if not t.get("ok", True):
+                continue
+            if _same_list(u, t.get("url") or ""):                                  # opened page 2, 3 ...
+                followed = True
+            elif t.get("tool") == "extract" and t.get("url") == u and "This list goes on" not in res:
+                followed = True                                                   # the list ended here
+            elif t.get("tool") == "click" and t.get("url") == u and res.startswith("New text on the page"):
+                followed = True                                                   # "Show more" loaded more
+        if not followed:
+            open_list = u
+    return open_list
+
+
+def _code_check(state: AgentState) -> tuple[dict, dict]:
+    """Checks in code before the model's check: (problem as the checker would return it, extra state)."""
+    answer = state.get("answer") or ""
+    if state.get("salvaged"):
+        return {}, {}
+    if (NOTHING_NEW.search(answer) and not state.get("second_look") and ABOUT_NEW.search(state.get("task") or "")
+            and not state.get("rejected")):   # "not sent because you said no" is not a reading of the page
+        return ({"ok": False, "fix": "work",
+                 "problem": "Before you report that nothing new came, look once more: open the conversation or inbox "
+                            "again (go_to its address to reload it), read its NEWEST part (the bottom of a chat, the top "
+                            "of an inbox; 'Text in view now' shows the screen) and name the newest item you see with its "
+                            "time and sender. Only then answer."}, {"second_look": True})
+    open_list = _list_not_followed(state)
+    if open_list and WHOLE_LIST.search(f"{state.get('task', '')} {answer}") and not LIMITED.search(answer):
+        return ({"ok": False, "fix": "work",
+                 "problem": f"The list at {open_list} goes on (the extract said it has a Next / Show more control) but "
+                            "only its first part was read, and the task or the answer is about the whole list (the "
+                            "cheapest, the best, the only one, all). Open the next page, extract again, and answer from "
+                            "every page."}, {})
+    return {}, {}
+
+
+# The checker saying an action HAPPENED ("the agent added an item to the cart", "the message was sent").
+CLAIMED_ACTION = re.compile(
+    r"\b(added|adds|adding)\b[^.]{0,40}\b(cart|basket|bag)\b|\b(was|were|has been|have been) (sent|submitted|posted|"
+    r"ordered|booked|purchased|bought|deleted)\b|\b(placed|submitted|sent|booked|purchased|bought|posted) (an?|the)\b",
+    re.I)
+_READ_ONLY = {"extract", "read_page", "find_in_page", "read_table", "read_file", "list_files", "look", "web_search",
+              "go_to", "back", "scroll", "switch_tab", "note", "hover", "finish", "give_up", "ask_user"}
+
+
+def _claims_unseen_action(state: AgentState, problem: str) -> bool:
+    """True when the checker says an action happened but no step shows it. Eval 24 Nov, twice: "the agent added an
+    item to the cart (step 3)" about an extract step, with "Cart (0)" on the page; the right answer got a false
+    warning. An action the agent really did leaves a result: "Added to Cart", "Sent", a click or key step."""
+    if not CLAIMED_ACTION.search(problem):
+        return False
+    if _done_so_far(state):
+        return False
+    acts = [s for s in state.get("steps") or [] if s.get("ok", True) and s.get("tool") not in _READ_ONLY
+            and s.get("tool") not in META_TOOLS]
+    # only navigation clicks ("Now at ...") and ticked filters: nothing was added, sent or bought
+    return all(s.get("tool") == "click" and re.match(r"(Now at|e\d+ \"[^\"]*\" is now (checked|unchecked))",
+                                                       str(s.get("result") or "")) for s in acts)
+
+
 def check(state: AgentState, config) -> dict:
     ctx = _ctx(config)
-    results = "\n".join(f"{s['n']}. {s.get('tool')}: {(s.get('result') or '')[:700]}"
+    code_problem, extra = _code_check(state)
+    if code_problem:
+        out: dict[str, Any] = {**extra, "checks": state.get("checks", 0) + (0 if "second_look" in extra else 1)}
+        out.update(_record(ctx, state, {"tool": "check", "args": {}, "why": "Check the answer against what was seen",
+                                        "result": f"Not OK: {code_problem['problem']}", "ok": False,
+                                        "url": ctx.browser.url}))
+        if out["checks"] >= MAX_CHECKS and "second_look" not in extra:
+            out["status"] = "done"
+            out["answer"] = (state.get("answer") or "") + f"\n\n(Note: not checked fully: {code_problem['problem']})"
+        else:
+            out["feedback"] = f"Your answer was checked and is not ready: {code_problem['problem']}"
+            out["answer"] = ""
+        return out
+    results ="\n".join(f"{s['n']}. {s.get('tool')}: {(s.get('result') or '')[:700]}"
                         for s in (state.get("steps") or [])[-14:] if s.get("tool") not in ("recall",))
     try:
         page = ctx.browser.snapshot().text[:3000]
@@ -711,19 +929,27 @@ def check(state: AgentState, config) -> dict:
     if state.get("history"):
         user = "EARLIER IN THIS CHAT:\n" + "\n".join(f"Q: {h['request']} A: {h['answer']}" for h in state["history"]) + "\n\n" + user
     data = _chat_json(ctx, prompts.CHECK, user, max_tokens=600)
-    ok = data.get("ok", True) is not False  # if the checker fails, do not block the answer
+    if "ok" not in data:   # the checker call failed or said nothing: try once more
+        data = _chat_json(ctx, prompts.CHECK, user, max_tokens=600)
+    unchecked = "ok" not in data
+    ok = data.get("ok", True) is not False
+    if not ok and _claims_unseen_action(state, str(data.get("problem") or "")):
+        log.info("Checker claimed an action no step shows; ignored: %s", data.get("problem"))
+        data, ok = {"ok": True}, True
     checks = state.get("checks", 0) + 1
     out: dict[str, Any] = {"checks": checks}
     out.update(_record(ctx, state, {"tool": "check", "args": {}, "why": "Check the answer against what was seen",
-                                    "result": "Answer OK." if ok else f"Not OK: {data.get('problem')}", "ok": ok,
-                                    "url": ctx.browser.url}))
+                                    "result": ("Could not run the check." if unchecked else "Answer OK.") if ok
+                                    else f"Not OK: {data.get('problem')}", "ok": ok, "url": ctx.browser.url}))
     if ok:
         out["status"] = "done"
+        if unchecked:   # never pass an unchecked answer off as checked
+            out["answer"] = (state.get("answer") or "") + "\n\n(Note: this answer could not be checked automatically.)"
         if not state.get("sources"):
             out["sources"] = list(dict.fromkeys(n["source"] for n in state.get("notes") or [] if n.get("source")))[:5]
     elif state.get("salvaged"):  # the answer from the notes was not good enough: stop honestly
         out["status"] = "failed"
-        out["answer"] = GIVE_UP + _notes_summary(state)
+        out["answer"] = _give_up_text(state)
     elif checks >= MAX_CHECKS:
         out["status"] = "done"
         out["answer"] = (state.get("answer") or "") + f"\n\n(Note: the automatic check was not fully satisfied: {data.get('problem')})"
@@ -821,6 +1047,11 @@ def after_execute(state: AgentState) -> str:
 
 
 GIVE_UP = "The agent got stuck and stopped after several new plans. "
+GIVE_UP_AR = "توقف الوكيل لأنه لم يتقدم رغم عدة خطط جديدة. "
+
+
+def _give_up_text(state: AgentState) -> str:
+    return (GIVE_UP_AR if _arabic(state) else GIVE_UP) + _notes_summary(state)
 
 
 def give_up(state: AgentState, config) -> dict:
@@ -834,7 +1065,7 @@ def give_up(state: AgentState, config) -> dict:
         if answer:
             return {"answer": answer, "salvaged": True, "status": "running",
                     "sources": list(dict.fromkeys(n["source"] for n in notes if n.get("source")))[:5]}
-    return {"status": "failed", "answer": GIVE_UP + _notes_summary(state)}
+    return {"status": "failed", "answer": _give_up_text(state)}
 
 
 def after_give_up(state: AgentState) -> str:

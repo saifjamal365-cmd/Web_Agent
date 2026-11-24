@@ -639,7 +639,10 @@ def describe_action(name: str, args: BaseModel, snap: Snapshot | None) -> str:
 ASKS_FOR_LOGIN = re.compile(
     r"(password|passcode|credential|one.?time code|verification code|2fa|otp\b|"
     r"(e-?mail|username|user name|phone)[^.?!]{0,60}(account|sign.?in|log.?in|login)|"
-    r"(account|sign.?in|log.?in|login)[^.?!]{0,60}(e-?mail|username|user name|phone))", re.I)
+    r"(account|sign.?in|log.?in|login)[^.?!]{0,60}(e-?mail|username|user name|phone)|"
+    r"كلمة (?:ال)?مرور|كلمة (?:ال)?سر|رمز (?:ال)?تحقق|رمز التأكيد|الرمز السري|رقم سري|"
+    r"(البريد|الإيميل|الايميل|اسم المستخدم|رقم (?:ال)?هاتف|الجوال)[^.?!؟]{0,60}(حساب|تسجيل الدخول|الدخول)|"
+    r"(حساب|تسجيل الدخول|الدخول)[^.?!؟]{0,60}(البريد|الإيميل|الايميل|اسم المستخدم|رقم (?:ال)?هاتف|الجوال))", re.I)
 
 
 def login_question(site: str) -> str:
@@ -821,10 +824,12 @@ def _extract(browser: BrowserSession, llm: LLM, question: str, hint: str = "", t
                  "\"every row in the list: sender, subject, date\"), without describing words the rows may not show.")
     cut = " (the page was long: only its first 40000 characters were used)" if len(text) >= 40000 else ""
     last = browser.last.refs.values() if browser.last and browser.last.url == browser.url else []
-    if any(re.fullmatch(r"(next|next page|more results|show more|load more|[›»>])", str(el.get("name") or "").strip(),
-                        re.I) for el in last):
-        hint += ("\nThis list goes on: the page has a Next / Show more control. Open it and extract again if you "
-                 "need every option.")
+    if any(re.fullmatch(r"(next|next page|more results|show more|load more|[›»>]|التالي|الصفحة التالية|التالية|"
+                        r"المزيد|عرض المزيد|تحميل المزيد|المزيد من النتائج)", str(el.get("name") or "").strip(), re.I)
+           for el in last):
+        hint += ("\nThis list goes on: the page has a Next / Show more control. If the task needs the whole list (the "
+                 "cheapest, the best, the only one, all, a comparison), open it and extract again BEFORE you answer; "
+                 "the answer is checked against every page.")
     return ToolResult(f"From {browser.url}{cut}:\n{answer[:3000]}" + hint, tokens=reply.tokens)
 
 

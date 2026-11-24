@@ -738,3 +738,72 @@ def test_going_back_and_forth_between_two_pages_is_stopped():
     # a read in between breaks the loop
     mixed = hops[:3] + [_n(_step("extract", {"question": "x"}, "From p1:\n| A |", url=p1), 4)]
     assert _repeat_reason({"steps": mixed}, "click", {"ref": "e178"}, p1) is None
+
+
+# ---------------------------------------------------------------- reload in "new message" tasks, cart rules (24 Nov)
+
+def test_a_reload_lets_the_agent_read_a_chat_again():
+    from webagent.agent.graph import _read_before
+    chat, q = "https://chat.test/c/1", "the newest message: sender, time, text"
+    ex = _n(_step("extract", {"question": q}, "From chat:\nAli 10:02: hi", url=chat), 1)
+    reload = _n(_step("go_to", {"url": chat}, "Opened " + chat, url=chat), 2)
+    new_task = {"task": "Did Ali send me a new message?", "steps": [ex, reload]}
+    assert _read_before(new_task, chat, q) is None                        # reloaded: new messages may be there
+    assert _read_before({**new_task, "steps": [ex]}, chat, q) == 1         # no reload: refused
+    # the second look the checker asks for works on any task
+    shop = {"task": "price of the T14", "second_look": True, "steps": [ex, reload]}
+    assert _read_before(shop, chat, q) is None
+    # a shopping task: going back to page 1 from page 2 is not a reload, still refused
+    p1, p2 = "https://shop.test/s", "https://shop.test/s?page=2"
+    loop = [_n(_step("extract", {"question": q}, "| A | $1 |", url=p1), 1),
+            _n(_step("click", {"ref": "e9"}, "Now at " + p2, url=p2), 2),
+            _n(_step("go_to", {"url": p1}, "Opened " + p1, url=p1), 3)]
+    assert _read_before({"task": "the cheapest laptop", "steps": loop}, p1, q) == 1
+    # even in a messages task, coming back from another page is not a reload
+    assert _read_before({"task": "any new messages?", "steps": loop}, p1, q) == 1
+
+
+def _cart_ctx(monkeypatch, item, verdict):
+    from types import SimpleNamespace
+    from webagent.browser.session import Snapshot
+    from webagent.agent import graph as G
+    seen = []
+    monkeypatch.setattr(G, "_chat_json", lambda ctx, system, user, **k: seen.append(user) or verdict)
+    ctx = SimpleNamespace(browser=SimpleNamespace(item_text=lambda ref: item))
+    snap = Snapshot(url="https://shop.test/s", title="", text="", refs={
+        "e5": {"role": "button", "name": "Add to Cart"}, "e6": {"role": "link", "name": "HP Pavilion 15"},
+        "e7": {"role": "button", "name": "أضف إلى السلة"}})
+    return G, ctx, snap, seen
+
+
+def test_add_to_cart_is_refused_when_the_item_breaks_the_task_rules(monkeypatch):
+    task = {"task": "Search for Lenovo laptops under $800 with 16GB RAM and add the best to the cart.", "steps": []}
+    G, ctx, snap, seen = _cart_ctx(monkeypatch, "HP Pavilion 15 | 16 GB RAM | $699 | Add to Cart",
+                                   {"ok": False, "problem": "The task asks for Lenovo; this is an HP laptop."})
+    args = T.validate("click", {"ref": "e5", "why": "add it"})
+    r = G._breaks_rules(ctx, task, "click", args, snap)
+    assert "Not added" in r and "Lenovo" in r
+    assert "HP Pavilion 15" in seen[0] and "Lenovo" in seen[0]          # the item text and the task were checked
+    # Arabic button too
+    assert G._breaks_rules(ctx, task, "click", T.validate("click", {"ref": "e7", "why": "x"}), snap)
+    # other clicks are not checked
+    assert G._breaks_rules(ctx, task, "click", T.validate("click", {"ref": "e6", "why": "x"}), snap) == ""
+    assert len(seen) == 2
+
+
+def test_add_to_cart_goes_on_when_the_item_fits_or_the_check_fails(monkeypatch):
+    task = {"task": "Add a Lenovo laptop under $800 to the cart.", "steps": []}
+    args = T.validate("click", {"ref": "e5", "why": "add it"})
+    for verdict in ({"ok": True, "rules": ["Lenovo", "under $800"]}, {}):     # fits / the model call failed
+        G, ctx, snap, _ = _cart_ctx(monkeypatch, "Lenovo IdeaPad 5 | 16 GB | $749", verdict)
+        assert G._breaks_rules(ctx, task, "click", args, snap) == ""
+    # no item text (a fake or an old browser): not checked here, the answer check still looks at the cart
+    G, ctx, snap, seen = _cart_ctx(monkeypatch, "", {"ok": False})
+    assert G._breaks_rules(ctx, task, "click", args, snap) == "" and seen == []
+
+
+def test_added_to_cart_in_arabic_is_seen():
+    from webagent.agent.graph import ADD_BUTTON, ADDED
+    assert ADD_BUTTON.search("أضف إلى السلة") and ADD_BUTTON.search("اضف للسلة") and ADD_BUTTON.search("Add to Cart")
+    assert ADDED.search("تمت الإضافة إلى السلة") and ADDED.search("Added to Cart")
+    assert not ADDED.search("تمت إضافة تعليقك")

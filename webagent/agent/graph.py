@@ -273,8 +273,24 @@ def _read_before(state: AgentState, url: str, question: str) -> int | None:
             later = [t for t in steps[i + 1:] if t.get("url") == url]
             changed = any(t.get("tool") not in _LOOK_ONLY and not (
                 t.get("tool") == "click" and str(t.get("result") or "").startswith("Now at")) for t in later)
-            return None if changed else s.get("n")
+            return None if changed or _reloaded(state, i, url) else s.get("n")
     return None
+
+
+def _reloaded(state: AgentState, i: int, url: str) -> bool:
+    """The agent opened this page again while already on it (a reload) after step index i, in a task about new
+    things (messages, an inbox, "anything new?"): new content may have come. Bug found 24 Nov: the "nothing new"
+    check tells the agent to reload the chat and read it again, and the read was refused as "already read"."""
+    if not (state.get("second_look") or ABOUT_NEW.search(state.get("task") or "")):
+        return False
+    steps = state.get("steps") or []
+    for j in range(i + 1, len(steps)):
+        t = steps[j]
+        if t.get("url") != url or not t.get("ok", True) or steps[j - 1].get("url") != url:
+            continue
+        if t.get("tool") == "go_to" or (t.get("tool") == "click" and str(t.get("result") or "").startswith("Now at")):
+            return True
+    return False
 
 
 def _render(state: AgentState, snap_text: str, max_steps: int | None = None) -> str:
@@ -519,8 +535,10 @@ def _person_text(state: AgentState) -> str:
     return "\n".join(parts).lower()
 
 
-ADD_BUTTON = re.compile(r"\badd to (cart|basket|bag|trolley)\b|\badd\b.{0,20}\b(cart|basket)\b", re.I)
-ADDED = re.compile(r"\badded to (your |the )?(cart|basket|bag|trolley)\b|\b(cart|basket) \(\d+\)", re.I)
+ADD_BUTTON = re.compile(r"\badd to (cart|basket|bag|trolley)\b|\badd\b.{0,20}\b(cart|basket)\b|"
+                        r"(أضف|اضف|إضافة|اضافة)\s*(إلى|الى|ل|في)?\s*(ال|ل)?(سلة|عربة|حقيبة)", re.I)
+ADDED = re.compile(r"\badded to (your |the )?(cart|basket|bag|trolley)\b|\b(cart|basket) \(\d+\)|"
+                   r"(تمت|تم|أضيف|اضيف)\s*(ال)?(إضافة|اضافة)?[^.]{0,30}(السلة|العربة)", re.I)
 WANTS_MORE = re.compile(r"\b(two|three|four|five|several|\d+)\s+(of|items?|units?|pieces?|copies|laptops?|of them)\b|"
                         r"\bquantity\b|\beach\b|\ball of\b|\bboth\b", re.I)
 
@@ -539,6 +557,38 @@ def _added_before(state: dict, name: str, args, snap) -> str:
                     "the task asks for one. Do not add again: if a different item is better, say so in your answer "
                     "(the person can change the cart). Check the cart page if you are not sure.")
     return ""
+
+
+def _breaks_rules(ctx: Ctx, state: dict, name: str, args, snap) -> str:
+    """Before "Add to cart": does the item break a rule the task states (brand, price limit, RAM ...)? Eval 24 Nov:
+    asked for a Lenovo under $800, the agent never searched for Lenovo and put an HP laptop in the cart; the checker
+    saw it only at the end, when the wrong item was already in the cart. Returns the refusal text, or ''."""
+    if name != "click" or snap is None:
+        return ""
+    el = snap.refs.get(str(getattr(args, "ref", "")).strip()) or {}
+    if not ADD_BUTTON.search(str(el.get("name") or "")):
+        return ""
+    item = ""
+    reader = getattr(ctx.browser, "item_text", None)
+    if callable(reader):
+        item = str(reader(str(args.ref).strip()) or "")
+    if not item.strip():
+        return ""   # nothing to check against: the answer check still looks at the cart at the end
+    user = f"TASK: {state.get('task', '')}\n"
+    if state.get("history"):
+        user += "EARLIER IN THIS CHAT:\n" + "\n".join(f"- Q: {h.get('request', '')}" for h in state["history"]) + "\n"
+    said = [str(s.get("result") or "") for s in state.get("steps") or [] if s.get("tool") == "ask_user"]
+    if said:
+        user += "THE PERSON'S ANSWERS:\n" + "\n".join(f"- {a[:300]}" for a in said) + "\n"
+    user += f"ITEM: {item[:1200]}"
+    data = _chat_json(ctx, prompts.CART_RULES, user, max_tokens=500)
+    if data.get("ok") is not False:
+        return ""   # OK, or the check failed: never block on a failed call
+    problem = str(data.get("problem") or "it does not meet the task's rules").strip().rstrip(".") + "."
+    log.info("Add to cart refused: %s", problem)
+    return (f"Not added: this item breaks the task's rules: {problem} Find an item that meets every rule (search the "
+            "site for it, for example by brand), check its details, then add that one. If no item meets the rules, "
+            "finish and say so.")
 
 
 def gate(state: AgentState, config) -> dict:
@@ -564,7 +614,10 @@ def gate(state: AgentState, config) -> dict:
     again = _added_before(state, p["name"], args, ctx.snap)
     if again:
         return {"decision": {"refused": again}}
-    offered = set(p.get("tools") or ctx.tools_now(state))
+    wrong = _breaks_rules(ctx, state, p["name"], args, ctx.snap)
+    if wrong:
+        return {"decision": {"refused": wrong}}
+    offered =set(p.get("tools") or ctx.tools_now(state))
     group = next((g for g, names in T.GROUPS.items() if p["name"] in names), "")
     if p["name"] not in offered and group in T.FREE_GROUPS:
         offered.add(p["name"])   # harmless tools from a group: no extra step for more_tools
@@ -590,7 +643,9 @@ def gate(state: AgentState, config) -> dict:
         if n:
             return {"decision": {"refused": f"You already extracted this from this page at step {n} and the page has "
                                             "not changed since: its result is under PAGES YOU ALREADY READ. Use it. "
-                                            "If the pages you read answer the task, note the answer and finish."}}
+                                            "If the pages you read answer the task, note the answer and finish. "
+                                            "(If the task is about new content, such as a new message, go_to this "
+                                            "page again to reload it, then extract.)"}}
     g = T.gate(p["name"], args, ctx.snap, state.get("last_typed"), desktop=ctx.env.desktop)
     if g.kind == "ok":
         return {"decision": {"approved": True}}

@@ -1166,6 +1166,27 @@ class BrowserSession:
         except Exception:
             return ""
 
+    def item_text(self, ref: str) -> str:
+        """The text of the item a button belongs to: the smallest product card (or buy box) around it with some
+        detail, plus the page heading when the card does not hold it. Used to check an "Add to cart" target."""
+        try:
+            return self._locator(ref).evaluate(r"""el => {
+              const clean = s => (s || '').replace(/\s+/g, ' ').trim();
+              const own = clean(el.innerText || el.value || '');
+              const h1 = clean((document.querySelector('h1') || {}).innerText || '');
+              let p = el.parentElement, best = '';
+              for (let i = 0; p && p !== document.body && i < 8; i++, p = p.parentElement) {
+                const t = clean(p.innerText);
+                if (t.length > 1500) break;
+                best = t;
+                if (t.replace(own, '').trim().length >= 50 && /\d/.test(t)) break;
+              }
+              best = best.slice(0, 900);
+              return (h1 && !best.includes(h1) ? h1.slice(0, 150) + ' | ' : '') + best;
+            }""", timeout=2000) or ""
+        except Exception:
+            return ""
+
     def type(self, ref: str, text: str, submit: bool = False) -> str:
         el = self.last.element(ref) if self.last else {}
         role = str(el.get("role") or "")

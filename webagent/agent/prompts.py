@@ -176,6 +176,17 @@ X" but the answer says nothing suitable was found or names another item. The ans
 Return JSON: {"ok": true or false, "fix": "answer" or "work", "problem": "if not ok: what is missing or unsupported,
 in one sentence"}"""
 
+CART_RULES = """A web agent is about to add an item to a shopping cart. Check the item against the person's TASK
+(and their answers, if any) before the click.
+List the hard rules the task states for the item: brand, maximum or minimum price, size, memory/RAM, storage,
+colour, model, quantity... Only rules the person's words state; "best" or "compare" is not a rule.
+ITEM is the text around the button the agent wants to click (the product card or product page).
+The item breaks a rule only when ITEM clearly shows it: another brand, a price over the limit, less RAM than asked,
+another model. A detail ITEM does not show is NOT a break (the agent may not see it here).
+If the task states no rule for the item, it is OK.
+Return JSON: {"rules": ["..."], "ok": true or false, "problem": "if not ok: which rule it breaks and what ITEM
+shows, in one sentence"}"""
+
 SALVAGE = """A web agent got stuck before it called finish. Below are the NOTES it saved from real web pages.
 If the notes fully answer the TASK, write the final answer for the person using ONLY facts from the notes
 (short, clear, with the numbers, names and dates exactly as in the notes). Do not add anything that is not in them.

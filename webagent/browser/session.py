@@ -1095,9 +1095,16 @@ class BrowserSession:
         url = url.strip()
         if not re.match(r"^[a-z][a-z0-9+.-]*:", url, re.I):
             url = "https://" + url
+        # Opening the address the tab is already on means "reload". With a "#" in it, page.goto only jumps inside
+        # the page and nothing is fetched again (eval 24 Nov: a chat at "inbox.html#" was "reloaded" twice and the
+        # new message never showed).
+        same = "#" in url and url == (self.url or "")
         for attempt in (1, 2):
             try:
-                self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                if same:
+                    self.page.reload(wait_until="domcontentloaded", timeout=30000)
+                else:
+                    self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 break
             except Exception as exc:
                 # A redirect or a late error page can interrupt the navigation: try once more.

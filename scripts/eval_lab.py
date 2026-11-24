@@ -192,7 +192,12 @@ def check_mega_nocart(s):
     return out
 
 
-CHECKS = {"mega": check_mega, "mega_nocart": check_mega_nocart, "sheets": check_sheets, "booking": check_booking, "newsletter": check_newsletter, "wishlist": check_wishlist,
+def check_inbox(s):
+    loads = (s.get("inbox") or {}).get("loads") or 0
+    return [] if loads >= 2 else [f"the chat was opened {loads}x: never reloaded, so Lina's new reply was never seen"]
+
+
+CHECKS = {"inbox": check_inbox, "mega": check_mega, "mega_nocart": check_mega_nocart, "sheets": check_sheets, "booking": check_booking, "newsletter": check_newsletter, "wishlist": check_wishlist,
           "docs": check_docs, "cart": check_cart, "board": check_board, "settings": check_settings}
 
 

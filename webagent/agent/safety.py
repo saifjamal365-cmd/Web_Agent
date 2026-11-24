@@ -24,6 +24,12 @@ RISKY_WORDS = [
     "تأكيد الطلب", "حذف", "احذف", "إزالة", "ازالة", "نشر", "انشر", "اشتراك", "اشترك", "إلغاء الاشتراك",
     "تسجيل حساب", "إنشاء حساب", "انشاء حساب", "احجز", "حجز", "تبرع", "تحويل", "سحب", "إيداع", "رفع", "تحميل ملف",
     "أوافق", "اوافق", "موافق", "قبول", "حفظ التغييرات", "تسجيل الخروج", "خروج",
+    # Found missing on 24 Nov (64 common Arabic shop/app labels, 25 got through): submit/place order, complete the
+    # order, clear, cancel an order or booking, register, save, install, activate, refund, tweet.
+    "تقديم", "تقديم الطلب", "قدم طلبك", "قدم الطلب", "ضع طلبك", "ضع الطلب", "أكمل الطلب", "إكمال الطلب",
+    "أكمل الشراء", "إكمال الشراء", "أكمل الدفع", "غرد", "مسح", "إلغاء الطلب", "إلغاء الحجز", "سجل الآن", "سجل حساب",
+    "التسجيل", "حفظ", "تثبيت", "تفعيل", "استرداد", "طلب استرجاع", "طلب إرجاع",
+    "cancel order", "cancel booking", "cancel reservation", "request refund",
 ]
 # Very common, harmless words that contain or equal a risky word in some contexts.
 SAFE_EXACT = {"search", "go", "next", "previous", "more", "show more", "load more", "filter", "sort", "menu",
@@ -31,10 +37,33 @@ SAFE_EXACT = {"search", "go", "next", "previous", "more", "show more", "load mor
               "reject all", "decline", "reject", "necessary only", "only necessary",
               "بحث", "ابحث", "التالي", "التالية", "السابق", "المزيد", "عرض المزيد", "تحميل المزيد", "تصفية", "ترتيب",
               "القائمة", "إغلاق", "اغلاق", "رجوع", "الرئيسية", "تسجيل الدخول", "دخول", "متابعة", "رفض", "رفض الكل",
-              "الضرورية فقط"}
+              "الضرورية فقط", "مسح البحث", "مسح الفلاتر", "مسح عوامل التصفية"}
 
-_risky_re = re.compile(r"\b(" + "|".join(re.escape(w) for w in sorted(RISKY_WORDS, key=len, reverse=True)) + r")\b",
-                       re.I)
+# Arabic is written with or without short vowels and with several hamza / ta marbuta spellings, and words take
+# attached prefixes (و ف ب ل ك, ال, لل). Eval 24 Nov: "إرسَال", "أرسِل", "تبرّع", "للإرسال", "عملية الشراء" all got
+# through. Names and word lists are matched in one plain spelling, and Arabic words may carry a prefix.
+_AR_MARKS = re.compile(r"[ً-ٰٟـ]")      # short vowels, shadda, sukun, dagger alef, tatweel
+_ARABIC = re.compile(r"[؀-ۿ]")
+
+
+def ar_plain(s: str) -> str:
+    s = _AR_MARKS.sub("", s or "")
+    return re.sub("[أإآٱ]", "ا", s).replace("ى", "ي").replace("ة", "ه")
+
+
+_AR_PREFIX = r"(?:[وفبلك]|لل|ال|وال|بال|فال|كال|ولل)?"
+_EN_RISKY = sorted({w for w in RISKY_WORDS if not _ARABIC.search(w)}, key=len, reverse=True)
+_AR_RISKY = sorted({ar_plain(w) for w in RISKY_WORDS if _ARABIC.search(w)}, key=len, reverse=True)
+_risky_re = re.compile(r"\b(" + "|".join(re.escape(w) for w in _EN_RISKY) + r")\b|(?<!\w)" + _AR_PREFIX + "("
+                       + "|".join(re.escape(w) for w in _AR_RISKY) + r")(?!\w)", re.I)
+_SAFE = {ar_plain(w) for w in SAFE_EXACT}
+_AR_RISKY_LINK = re.compile(r"(?<!\w)" + _AR_PREFIX + "(" + "|".join(re.escape(ar_plain(w)) for w in (
+    "حذف", "احذف", "إلغاء الاشتراك", "ادفع", "اشتر الآن", "إتمام الطلب", "إتمام الشراء", "تسجيل الخروج", "تحويل",
+    "قدم طلبك", "إلغاء الطلب", "إلغاء الحجز")) + r")(?!\w)")
+
+
+def _risky_word(m: re.Match) -> str:
+    return m.group(1) or m.group(2)
 
 SECRET_FIELD = re.compile(
     r"(passw|passcode|pwd|\bpin\b|otp|one.?time|2fa|mfa|totp|verification.?code|security.?code|cvv|cvc|csc|"
@@ -50,21 +79,21 @@ def _norm(s: str) -> str:
 
 def risky_reason(element: dict, tool: str = "click") -> str | None:
     """Why this action needs approval, or None if it is safe to do without asking."""
-    name = _norm(element.get("name", ""))
+    name = ar_plain(_norm(element.get("name", "")))
     role = element.get("role", "")
-    if name in SAFE_EXACT:
+    if name in _SAFE:
         return None
     if role == "link" and not element.get("form"):
         # Plain links navigate; only flag clearly dangerous link text.
         m = re.search(r"\b(delete|remove|unsubscribe|pay|buy now|checkout|place order|log out|sign out|"
-                      r"cancel subscription|close account|transfer|حذف|احذف|إلغاء الاشتراك|ادفع|اشتر الآن|"
-                      r"إتمام الطلب|اتمام الطلب|إتمام الشراء|تسجيل الخروج|تحويل)\b", name, re.I)
+                      r"cancel subscription|close account|cancel order|transfer)\b", name, re.I) or \
+            _AR_RISKY_LINK.search(name)
         return f'The link "{element.get("name")}" may change something for real ({m.group(1)}).' if m else None
     is_submit = role in ("button", "input:submit", "input:image") or element.get("type") == "submit"
     m = _risky_re.search(name)
     if m:
-        return f'The {role or "element"} "{element.get("name")}" may change something for real ({m.group(1)}).'
-    form = _norm(element.get("form", ""))
+        return f'The {role or "element"} "{element.get("name")}" may change something for real ({_risky_word(m)}).'
+    form = ar_plain(_norm(element.get("form", "")))
     if is_submit and form:
         m = _risky_re.search(form) or re.search(r"(checkout|payment|order|cart|delete|contact|message|comment)", form)
         if m:

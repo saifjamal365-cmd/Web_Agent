@@ -162,6 +162,9 @@ only part of it. It is OK if the answer limits the claim to what was seen ("the 
 An answer that says nothing is new, nothing was found or no new message came is NOT OK (fix "work") unless the
 evidence shows the newest items themselves (the bottom of the chat, the top of the inbox) and the answer names the
 newest one it saw.
+Newer evidence wins: pages change (a chat gets a new message after a reload). If the CURRENT PAGE or a later step
+shows something an earlier note or step said was missing, the newer evidence is right and the older note is out of
+date. Read the CURRENT PAGE's "Text in view now" (what is on screen) before saying the page does not show something.
 The answer must be in the language of the TASK (an Arabic task needs an Arabic answer; names and prices may stay
 as the page shows them). If not, it is NOT OK (fix "answer").
 Say what has to be fixed:

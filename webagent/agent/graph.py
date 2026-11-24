@@ -272,7 +272,8 @@ def _read_before(state: AgentState, url: str, question: str) -> int | None:
                 return None
             later = [t for t in steps[i + 1:] if t.get("url") == url]
             changed = any(t.get("tool") not in _LOOK_ONLY and not (
-                t.get("tool") == "click" and str(t.get("result") or "").startswith("Now at")) for t in later)
+                t.get("tool") == "click" and str(t.get("result") or "").startswith("Now at")) for t in later) or any(
+                t.get("tool") == "check" and "was just reloaded" in str(t.get("result") or "") for t in later)
             return None if changed or _reloaded(state, i, url) else s.get("n")
     return None
 
@@ -403,16 +404,14 @@ def decide(state: AgentState, config) -> dict:
             if "invalid tool call" not in str(first):
                 raise
             # Open models sometimes write broken JSON: ask once more at once (no step spent), more strictly.
-            retry = messages + [{"role": "user", "content": "Your last tool call was not valid JSON. Call exactly "
-                                 "one tool, with short, valid JSON arguments."}]
+            retry = messages + [{"role": "user", "content": _invalid_call_hint(only)}]
             reply = ctx.llm.chat(retry, tools=T.schemas(only, missing), tool_choice="required", max_tokens=2000,
                                  temperature=0.0)
     except LLMError as exc:
         if "invalid tool call" in str(exc):
-            return {**_record(ctx, state, {"tool": "model", "args": {}, "why": "", "result": str(exc) +
-                                           " Call one tool with valid JSON arguments.", "ok": False,
-                                           "url": browser.url}), "pending": None,
-                    "feedback": "Your last tool call was invalid JSON. Call exactly one tool with valid arguments."}
+            hint = _invalid_call_hint(only)
+            return {**_record(ctx, state, {"tool": "model", "args": {}, "why": "", "result": str(exc) + " " + hint,
+                                           "ok": False, "url": browser.url}), "pending": None, "feedback": hint}
         return {"status": "failed", "answer": str(exc), "pending": None}
     ctx.on_tokens(reply.tokens)
     if not reply.tool_calls:
@@ -423,6 +422,17 @@ def decide(state: AgentState, config) -> dict:
     call = reply.tool_calls[0]
     return {"pending": {"name": call.name, "args": call.args, "url": browser.url, "tools": sorted(only)},
             "decision": None, "current_url": browser.url}
+
+
+def _invalid_call_hint(offered: set[str]) -> str:
+    """What to say after a tool call Groq refused. In the last steps only note / finish / give_up are offered, and a
+    call to any other tool is refused as "invalid". Eval 24 Nov (amazon.sa): told "invalid JSON", the agent tried
+    click and find_in_page 3 more times and ran out of steps without an answer."""
+    if set(offered) <= FINAL_TOOLS:
+        return ("You are out of browsing steps: only note, finish and give_up work now (click, find_in_page and the "
+                "other browsing tools are switched off). Call finish now with the best answer from your notes and the "
+                "pages you read, and say what is missing.")
+    return "Your last tool call was not valid. Call exactly one tool from the list, with short, valid JSON arguments."
 
 
 def _arabic(state: AgentState) -> bool:
@@ -955,11 +965,56 @@ def _claims_unseen_action(state: AgentState, problem: str) -> bool:
                                                        str(s.get("result") or "")) for s in acts)
 
 
+VIEW_MARK = "Text in view now"
+
+
+def _page_for_check(text: str, view_cap: int = 1500, cap: int = 3000) -> str:
+    """The page for the checker: what is on screen FIRST, then the start of the element list. Eval 24 Nov: the
+    checker got the first 3000 characters, the on-screen text (a chat's newest message) comes last and was cut, so
+    it rejected a right answer twice ("the page shows no such reply")."""
+    i = text.find(VIEW_MARK)
+    if i < 0:
+        return text[:cap]
+    view = text[i:i + view_cap]
+    return view + "\n\nPAGE ELEMENTS (start):\n" + text[:max(0, cap - len(view))]
+
+
+def _reload_for_second_look(ctx: Ctx, state: AgentState) -> str:
+    """Open again the page the "nothing new" answer was read from (the last page read), so new messages show.
+    Returns its address, or '' if it could not be opened."""
+    url = ""
+    for s in reversed(state.get("steps") or []):
+        if s.get("tool") in ("read_page", "extract", "find_in_page", "read_table", "look", "go_to") and s.get("url"):
+            url = s["url"]
+            break
+    url = url or ctx.browser.url
+    if not url.startswith(("http://", "https://")):
+        return ""
+    try:
+        ctx.browser.goto(url)
+        ctx.snap = None
+        return url
+    except Exception as exc:   # BrowserError, or a test double without a browser
+        log.info("Reload for the second look failed: %s", exc)
+        return ""
+
+
 def check(state: AgentState, config) -> dict:
     ctx = _ctx(config)
     code_problem, extra = _code_check(state)
     if code_problem:
         out: dict[str, Any] = {**extra, "checks": state.get("checks", 0) + (0 if "second_look" in extra else 1)}
+        if "second_look" in extra:
+            # Reload in code, not by asking the model. Eval 24 Nov: told to reload the chat, the agent only scrolled
+            # and sent the same "no reply" answer again, and the checker passed it (the reply came after a reload).
+            reloaded = _reload_for_second_look(ctx, state)
+            if reloaded:
+                code_problem = {**code_problem, "problem": (
+                    f"Before you report that nothing new came, look once more. The page {reloaded} was just reloaded "
+                    "for you: read its NEWEST part now ('Text in view now': the bottom of a chat, the top of an inbox) "
+                    "and name the newest item with its time and sender. Notes written before this reload may be out "
+                    "of date: answer from what the page shows now.")}
+                out["current_url"] = ctx.browser.url
         out.update(_record(ctx, state, {"tool": "check", "args": {}, "why": "Check the answer against what was seen",
                                         "result": f"Not OK: {code_problem['problem']}", "ok": False,
                                         "url": ctx.browser.url}))
@@ -973,7 +1028,7 @@ def check(state: AgentState, config) -> dict:
     results ="\n".join(f"{s['n']}. {s.get('tool')}: {(s.get('result') or '')[:700]}"
                         for s in (state.get("steps") or [])[-14:] if s.get("tool") not in ("recall",))
     try:
-        page = ctx.browser.snapshot().text[:3000]
+        page = _page_for_check(ctx.browser.snapshot().text)
     except Exception:
         page = "(not available)"
     user = (f"TASK: {state['task']}\n{_today_line()}\n\nANSWER: {state.get('answer')}\nSOURCES: {state.get('sources')}\n\n"

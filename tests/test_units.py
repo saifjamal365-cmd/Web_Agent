@@ -807,3 +807,58 @@ def test_added_to_cart_in_arabic_is_seen():
     assert ADD_BUTTON.search("أضف إلى السلة") and ADD_BUTTON.search("اضف للسلة") and ADD_BUTTON.search("Add to Cart")
     assert ADDED.search("تمت الإضافة إلى السلة") and ADDED.search("Added to Cart")
     assert not ADDED.search("تمت إضافة تعليقك")
+
+
+# ---------------------------------------------------------------- gaps found 24 Nov (Arabic labels, chat second look)
+
+@pytest.mark.parametrize("name", ["إرسَال", "أرسِل", "للإرسال", "اشترِ الآن", "إتمام عملية الشراء", "متابعة لإتمام الشراء",
+                                  "تقديم الطلب", "قدّم طلبك", "ضع طلبك", "أكمل الطلب", "غرّد", "مسح الكل", "إلغاء الطلب",
+                                  "سجّل الآن", "التسجيل", "حفظ", "تبرّع", "تثبيت", "تفعيل", "إلغاء الحجز", "استرداد"])
+def test_arabic_labels_with_vowels_prefixes_and_new_words_need_approval(name):
+    assert safety.risky_reason({"role": "button", "name": name})
+
+
+@pytest.mark.parametrize("name", ["تسجيل الدخول إلى حسابك", "مسح البحث", "سجل الطلبات", "أضف إلى السلة", "إغلاق",
+                                  "مُجدّد - ممتاز", "رد", "عرض المزيد"])
+def test_arabic_harmless_labels_stay_free(name):
+    assert safety.risky_reason({"role": "button", "name": name}) is None
+
+
+def test_arabic_order_link_needs_approval_but_a_plain_link_does_not():
+    assert safety.risky_reason({"role": "link", "name": "قدّم طلبك الآن"})
+    assert safety.risky_reason({"role": "link", "name": "الإلكترونيات"}) is None
+
+
+def test_checker_sees_the_screen_text_first():
+    from webagent.agent.graph import _page_for_check
+    text = "URL: x\n" + "\n".join(f"e{i} [link] \"Menu {i}\"" for i in range(300)) + \
+           "\nText in view now (what is on screen): Lina Just now 4:30 PM works for me."
+    page = _page_for_check(text)
+    assert page.startswith("Text in view now") and "4:30 PM" in page and len(page) <= 3100
+    assert _page_for_check("short page") == "short page"
+
+
+def test_second_look_reloads_the_chat_in_code(monkeypatch):
+    from types import SimpleNamespace
+    from webagent.agent import graph as G
+    chat = "http://127.0.0.1:8766/inbox.html#"
+    opened = []
+    browser = SimpleNamespace(url=chat, goto=lambda u: opened.append(u))
+    ctx = SimpleNamespace(on_step=lambda s: None, browser=browser, snap=object())
+    monkeypatch.setitem(G.CONTEXTS, "t-look", ctx)
+    q = "messages from Lina"
+    steps = [_n(_step("extract", {"question": q}, "From chat:\n| Saif | 20 min | Lina, what time? |", url=chat), 1),
+             _n(_step("finish", {"answer": "No"}, "Finished.", url=chat), 2)]
+    state = {"task": "Has Lina replied to my question?", "answer": "No, Lina has not replied.", "steps": steps}
+    out = G.check(state, {"configurable": {"thread_id": "t-look"}})
+    assert opened == [chat] and ctx.snap is None                 # reloaded by the code, not left to the model
+    assert out["second_look"] and "was just reloaded" in out["feedback"] and out["answer"] == ""
+    # reading the same page again after that reload is allowed
+    later = {**state, **out}
+    assert G._read_before(later, chat, q) is None
+
+
+def test_out_of_steps_hint_says_to_finish_not_to_fix_json():
+    from webagent.agent.graph import FINAL_TOOLS, _invalid_call_hint
+    assert "out of browsing steps" in _invalid_call_hint(set(FINAL_TOOLS))
+    assert "valid JSON" in _invalid_call_hint({"click", "finish", "note"})

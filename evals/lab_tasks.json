@@ -131,5 +131,13 @@
       "629"
     ],
     "check": "mega_nocart"
+  },
+  {
+    "id": "inbox-reload",
+    "category": "chat: a new message after a reload",
+    "must_not_ask": true,
+    "request": "Open http://127.0.0.1:8766/inbox.html. Has Lina replied to my question about the meeting time? If she has, what time did she propose?",
+    "expect_regex": "4[:.]30",
+    "check": "inbox"
   }
 ]

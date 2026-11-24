@@ -385,3 +385,11 @@ def test_a_chat_shows_its_newest_message_and_scrolls_its_own_pane(browser, lab):
     up = browser.scroll("up")
     assert up.startswith('Scrolled up the "Message list" area'), up
     assert "Older note number" in browser.snapshot().text
+
+
+def test_opening_the_same_chat_address_again_reloads_it(browser, lab):
+    # 24 Nov: at "inbox.html#" page.goto only jumped inside the page, so a chat "reload" never fetched new messages
+    browser.goto(f"{lab}/inbox.html#")
+    assert "4:30 PM" not in browser.snapshot().text
+    browser.goto(browser.url)
+    assert "4:30 PM" in browser.snapshot().text

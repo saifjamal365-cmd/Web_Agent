@@ -227,6 +227,8 @@ def run_one(spec, timeout=420):
         d = call("GET", f"/api/tasks/{t['id']}")
     time.sleep(0.5)
     answer = (d.get("answer") or "").replace(" ", " ").replace(" ", " ")   # narrow no-break spaces
+    # Grade on the plain letters: Arabic answers carry diacritics ("عمّان") that a pattern written without them misses
+    answer = re.sub("[ً-ْٰـ]", "", answer)
     low = answer.lower()
     asked = sum(1 for s in d["steps"] if s["tool"] == "ask_user" and str(s.get("result") or "").startswith("The person"))
     problems = []

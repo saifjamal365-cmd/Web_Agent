@@ -116,7 +116,7 @@ def _ctx(config) -> Ctx:
     return CONTEXTS[config["configurable"]["thread_id"]]
 
 
-def _chat_json(ctx: Ctx, system: str, user: str, max_tokens: int = 900) -> dict:
+def _chat_json(ctx: Ctx, system: str, user: str, max_tokens: int = 1500) -> dict:
     try:
         reply = ctx.llm.chat([{"role": "system", "content": system}, {"role": "user", "content": user}],
                              json_mode=True, max_tokens=max_tokens, temperature=0.2)
@@ -187,7 +187,7 @@ def plan(state: AgentState, config) -> dict:
         user += "LESSONS:\n" + "\n".join(f"- {l}" for l in state["lessons"]) + "\n"
     if state.get("start_url"):
         user += f"The browser is already at {state['start_url']}\n"
-    data = _chat_json(ctx, prompts.PLAN, user, max_tokens=700)
+    data = _chat_json(ctx, prompts.PLAN, user, max_tokens=1500)
     steps = [str(s)[:200] for s in (data.get("plan") or []) if str(s).strip()][:6] or [
         "Find the right website", "Find the information or do the action", "Check it and answer"]
     ctx.on_plan(steps)
@@ -232,7 +232,12 @@ def _pages_read(state: AgentState, keep: int = 6, cap: int = 1800) -> str:
     if not latest:
         return ""
     last_n = steps[-1].get("n") if steps else None
-    entries = sorted(latest.values(), key=lambda s: s.get("n") or 0)[-keep:]
+    # At most the 2 newest reads of one page (24 Nov, amazon.sa: 6 extracts of one result page with slightly
+    # different questions filled every slot with near copies, ~10k characters on every step).
+    per_url: dict[str, list[dict]] = {}
+    for s in sorted(latest.values(), key=lambda s: s.get("n") or 0):
+        per_url.setdefault(s.get("url") or "", []).append(s)
+    entries = sorted((s for group in per_url.values() for s in group[-2:]), key=lambda s: s.get("n") or 0)[-keep:]
     blocks, urls = [], []
     for s in entries:
         res = str(s.get("result") or "")
@@ -275,6 +280,25 @@ def _read_before(state: AgentState, url: str, question: str) -> int | None:
                 t.get("tool") == "click" and str(t.get("result") or "").startswith("Now at")) for t in later) or any(
                 t.get("tool") == "check" and "was just reloaded" in str(t.get("result") or "") for t in later)
             return None if changed or _reloaded(state, i, url) else s.get("n")
+    return None
+
+
+def _whole_page_read(state: AgentState, url: str) -> int | None:
+    """The step that read this whole page's text (extract, or read_page of a 1-part page), if nothing on the page
+    changed since. Live amazon.eg, 25 Nov: after extract had read the whole results page, the agent scrolled 4
+    times to "see" it, which shows nothing new."""
+    steps = state.get("steps") or []
+    for i in range(len(steps) - 1, -1, -1):
+        s = steps[i]
+        if s.get("url") != url:
+            continue
+        res = str(s.get("result") or "")
+        whole = s.get("ok", True) and ((s.get("tool") == "extract" and res.startswith("From ") and "only its first"
+                                        not in res[:300]) or (s.get("tool") == "read_page" and " part 1 of 1 " in res[:60]))
+        if whole:
+            return s.get("n")
+        if s.get("tool") not in _LOOK_ONLY:
+            return None
     return None
 
 
@@ -591,7 +615,7 @@ def _breaks_rules(ctx: Ctx, state: dict, name: str, args, snap) -> str:
     if said:
         user += "THE PERSON'S ANSWERS:\n" + "\n".join(f"- {a[:300]}" for a in said) + "\n"
     user += f"ITEM: {item[:1200]}"
-    data = _chat_json(ctx, prompts.CART_RULES, user, max_tokens=500)
+    data = _chat_json(ctx, prompts.CART_RULES, user, max_tokens=1200)
     if data.get("ok") is not False:
         return ""   # OK, or the check failed: never block on a failed call
     problem = str(data.get("problem") or "it does not meet the task's rules").strip().rstrip(".") + "."
@@ -695,14 +719,18 @@ REPEAT_OK = {"scroll", "press", "back", "finish", "give_up", "ask_user"}  # repe
 META_TOOLS = {"recall", "check", "reflect", "learn", "model"}
 
 
+def _is_move(s: dict) -> bool:
+    return s.get("ok", True) and (s.get("tool") in ("back", "go_to", "switch_tab") or (
+        s.get("tool") == "click" and str(s.get("result") or "").startswith("Now at")))
+
+
 def _ping_pong(recent: list[dict]) -> bool:
     """The last 4 steps only moved between the same two pages (A, B, A, B). Eval 24 Nov: Next / Previous clicked
     ~25 times between page 1 and page 2 without one extract; each click reached a 'new' page, so the same-action
     guard never fired."""
     if len(recent) < 4:
         return False
-    moves = all(s.get("ok", True) and (s.get("tool") in ("back", "go_to", "switch_tab") or (
-        s.get("tool") == "click" and str(s.get("result") or "").startswith("Now at"))) for s in recent)
+    moves = all(_is_move(s) for s in recent)
     urls = [s.get("url") for s in recent]
     return moves and len(set(urls)) == 2 and urls[0] == urls[2] and urls[1] == urls[3] and urls[0] != urls[1]
 
@@ -729,6 +757,22 @@ def _repeat_reason(state: AgentState, name: str, raw_args: dict | None, url: str
         return (f"You went back and forth between {a} and {b} four times without reading them. Stop moving: "
                 "extract what you need from the page you are on (or use PAGES YOU ALREADY READ), note it, then "
                 "finish or act.")
+    steps = state.get("steps") or []
+    warned = any(str(s.get("result") or "").startswith("Refused: You went back and forth") for s in steps)
+    last3 = recent[-3:]
+    if (name in ("click", "back", "go_to", "switch_tab") and warned and len(last3) == 3 and all(_is_move(s) for s in last3)
+            and last3[0].get("url") == last3[2].get("url") != last3[1].get("url")):
+        # Eval 25 Nov: after the first refusal the agent went on 1, 2, 1, 2 until it was refused again, 3 times
+        return ("You are going back and forth between the same two pages again. Stop moving: read the page you are "
+                "on (extract or find_in_page), note what it has, then go on to a page you have not seen.")
+    if name == "click":
+        dead = [s for s in steps if s.get("tool") == "click" and (s.get("args") or {}).get("ref") == args.get("ref")
+                and s.get("url") == url and str(s.get("result") or "").startswith("No visible text changed")]
+        if len(dead) >= 2:
+            # Eval 25 Nov (inbox): the same dead link was clicked 7 times; the guard above only sees the last 4 steps
+            return (f"You clicked {args.get('ref')} on this page {len(dead)} times already and it never changed "
+                    "anything. It does nothing here: do not click it again. Read the page (read_page / find_in_page), "
+                    "use another element, or go_to this page again to reload it.")
     same =[s for s in recent if s.get("tool") == name and (s.get("args") or {}) == args and s.get("url") == url
             and s.get("ok", True) and not str(s.get("result") or "").startswith("Refused")]
     if len(same) >= 2 and same[-1].get("result") == same[-2].get("result"):
@@ -816,6 +860,12 @@ def execute(state: AgentState, config) -> dict:
         # "nothing meets the criteria". Say what the next steps are.
         res.text += (" The item is in the cart now. Next: open the cart to check it, then finish with that item "
                      "(name, price, why it is the best match, the other options in a few words). Do not shop on.")
+    if name == "scroll" and res.ok:
+        n = _whole_page_read(state, ctx.browser.url)
+        if n:
+            res.text += (f" (You already read this whole page's text at step {n}: scrolling does not show you more "
+                         "of it. Scroll only to reach an element you will click or to load more items; otherwise "
+                         "use what you read: note it and finish or act.)")
     if name == "type" and ctx.snap and args.ref in ctx.snap.refs:
         out["last_typed"] = ctx.snap.refs[args.ref]
     if res.groups:
@@ -848,7 +898,7 @@ def reflect(state: AgentState, config) -> dict:
             f"\nCURRENT PAGE: {ctx.browser.url}")
     if state.get("rejected"):
         user += "\nTHE PERSON REJECTED: " + "; ".join(dict.fromkeys(r["what"] for r in state["rejected"]))
-    data = _chat_json(ctx, prompts.REFLECT, user, max_tokens=700)
+    data = _chat_json(ctx, prompts.REFLECT, user, max_tokens=1500)
     new_plan = [str(s)[:200] for s in (data.get("plan") or [])][:5] or state.get("plan") or []
     problem = str(data.get("problem") or "Repeating the same actions without progress.")[:300]
     ctx.on_plan(new_plan)
@@ -1038,9 +1088,9 @@ def check(state: AgentState, config) -> dict:
             f"CURRENT PAGE (what the browser shows now):\n{page}")
     if state.get("history"):
         user = "EARLIER IN THIS CHAT:\n" + "\n".join(f"Q: {h['request']} A: {h['answer']}" for h in state["history"]) + "\n\n" + user
-    data = _chat_json(ctx, prompts.CHECK, user, max_tokens=600)
+    data = _chat_json(ctx, prompts.CHECK, user, max_tokens=1800)
     if "ok" not in data:   # the checker call failed or said nothing: try once more
-        data = _chat_json(ctx, prompts.CHECK, user, max_tokens=600)
+        data = _chat_json(ctx, prompts.CHECK, user, max_tokens=1800)
     unchecked = "ok" not in data
     ok = data.get("ok", True) is not False
     if not ok and _claims_unseen_action(state, str(data.get("problem") or "")):
@@ -1170,7 +1220,7 @@ def give_up(state: AgentState, config) -> dict:
     if notes:
         ctx = _ctx(config)
         notes_text = "\n".join(f"- {n['fact']} (source: {n['source']})" for n in notes)
-        data = _chat_json(ctx, prompts.SALVAGE, f"TASK: {state['task']}\n\nNOTES:\n{notes_text}", max_tokens=600)
+        data = _chat_json(ctx, prompts.SALVAGE, f"TASK: {state['task']}\n\nNOTES:\n{notes_text}", max_tokens=1500)
         answer = str(data.get("answer") or "").strip()
         if answer:
             return {"answer": answer, "salvaged": True, "status": "running",

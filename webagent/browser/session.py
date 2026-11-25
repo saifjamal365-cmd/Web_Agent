@@ -195,7 +195,9 @@ SNAPSHOT_JS = r"""
     if (!tail || text.includes(tail)) view = '';   // already in the start of the page text
   }
   const captcha = !!document.querySelector('iframe[src*="recaptcha"],iframe[src*="hcaptcha"],iframe[src*="challenges.cloudflare"],#challenge-form,.g-recaptcha,.h-captcha')
-      || /verify (that )?you are (a )?human|are you a robot|not a (ro)?bot|made by a human|unusual traffic|press (and|&) hold/i.test(clean(document.body ? document.body.innerText : '').slice(0, 3000));
+      || /verify (that )?you are (a )?human|are you a robot|not a (ro)?bot|made by a human|unusual traffic|press (and|&) hold|you have been blocked|request (was |has been )?blocked/i.test(clean(document.body ? document.body.innerText : '').slice(0, 3000))
+      // block pages by title (25 Nov: Lulu's "Attention Required! | Cloudflare" was not seen as a bot check)
+      || /^(attention required|just a moment|access denied|pardon our interruption|request blocked|security check)/i.test(clean(document.title));
   const se = document.scrollingElement || document.documentElement;
   const tables = Array.from(document.querySelectorAll('table,[role=table],[role=grid]')).filter(visible)
       .filter(t => t.querySelectorAll('tr,[role=row]').length >= 2 && t.querySelectorAll('td,th,[role=cell],[role=gridcell]').length >= 4).length;
@@ -479,7 +481,11 @@ def _short_href(href: str, page_url: str) -> str:
         return href[:50]
 
 
-SHOW_ITEMS = 120   # elements listed for the model; the rest keep their refs and are found with find_in_page
+SHOW_ITEMS = 90    # elements listed for the model; the rest keep their refs and are found with find_in_page
+
+
+_CUR = r"(sar|usd|aed|egp|jod|kwd|qar|eur|gbp|\$|€|£|ريال|ر\.س|درهم|دينار|جنيه)"
+PRICE_NAME = re.compile(rf"^\W*({_CUR}\s*[\d٠-٩]|[\d٠-٩][\d٠-٩.,\s]*\s*{_CUR})", re.I)   # a currency is required
 
 
 def format_snapshot(raw: dict) -> Snapshot:
@@ -489,7 +495,8 @@ def format_snapshot(raw: dict) -> Snapshot:
         pct = int(100 * sc["y"] / sc["max"]) if sc["max"] else 0
         lines.append(f"Scroll: {pct}% down the page")
     if raw.get("captcha"):
-        lines.append("WARNING: this page shows a CAPTCHA / bot check. Do not try to solve it: use ask_user or another website.")
+        lines.append("WARNING: this page shows a CAPTCHA / bot check or a block page. Do not try to solve or get around "
+                     "it: use another website, or finish and say the site blocked the browser.")
     if raw.get("dialog"):
         lines.append(f"A POP-UP IS OPEN and blocks the page: \"{raw['dialog']}\". Deal with it first: its buttons "
                      "are listed first (or keys {Escape} closes it).")
@@ -497,14 +504,37 @@ def format_snapshot(raw: dict) -> Snapshot:
         lines.append("Headings: " + " | ".join(raw["heads"]))
     refs: dict[str, dict] = {it["ref"]: it for it in raw["items"]}
     main = [it for it in raw["items"] if it.get("frame_title") is None]
+    repeats: dict[str, int] = {}
     if len(main) > SHOW_ITEMS:
-        # Too many to list (shops with mega menus): keep the ones a task needs most. In view first; then form
-        # controls and buttons (search box, filters, Add to Cart), then links in the content, then menu links.
+        # Too many to list (shops with mega menus): keep the ones a task needs most. Page content first (in view,
+        # then below, then above; form controls and buttons before links in view), then the site's menu links, then
+        # the 3rd and later copies of one label ("Add to cart", "4.4 out of 5 stars"). Eval 24 Nov (amazon.sa): 35
+        # of 120 lines were header links and most of the rest unnamed "Add to cart" and rating buttons, while the
+        # product links below were not listed at all.
         where = {"view": 0, "below": 1, "above": 2}
+        seen: dict[str, int] = {}
+        copy: dict[int, int] = {}
+        for it in main:
+            key = str(it.get("name") or "").strip().lower()
+            # Numbers are ignored for buttons ("4.4 out of 5 stars") and price links ("SAR 2,179.00"), never for other
+            # links: page numbers "2", "3" and products like "ThinkPad T14" / "T490" must all stay.
+            if it.get("role") not in ("link", "clickable") or PRICE_NAME.match(key):
+                key = re.sub(r"[\d.,٠-٩]+", "#", key)
+            if key:
+                seen[key] = seen.get(key, 0) + 1
+                copy[id(it)] = seen[key]
+        for key, n in seen.items():
+            if n > 2:
+                repeats[key] = n - 2
 
         def prio(it):
             link = it.get("role") in ("link", "clickable")
-            return where.get(it.get("where"), 1), (2 if it.get("nav") else 1) if link else 0
+            if copy.get(id(it), 1) > 2:
+                return 6, 0
+            if it.get("nav") and link:
+                return (3 if it.get("where") == "view" else 5), 0
+            w = where.get(it.get("where"), 1)
+            return w, (1 if link else 0) if w == 0 else 0
         keep = {id(it) for it in sorted(main, key=prio)[:SHOW_ITEMS]}
     else:
         keep = {id(it) for it in main}
@@ -542,12 +572,19 @@ def format_snapshot(raw: dict) -> Snapshot:
         if it.get("disabled"):
             line += " (disabled)"
         href = _short_href(it.get("href", ""), raw["url"])
+        if len(str(it.get("name") or "")) > 30 and len(href) > 25:
+            href = ""   # a long product title says where it goes; its long address only costs tokens
         if href and it["role"] == "link":
             line += f" -> {href}"
         lines.append(line)
     if total > len(shown):
         lines.append(f"-- {total - len(shown)} more elements are not listed: find_in_page with a few words of a "
                      "button or link (e.g. 'Add to Cart') gives their refs --")
+        many = sorted(repeats.items(), key=lambda kv: -kv[1])[:4]
+        if many:
+            lines.append("-- repeated labels listed only twice: " + ", ".join(
+                f"\"{k.replace('#', 'N')[:40]}\" x{n + 2}" for k, n in many) + " (one per item: find_in_page with the "
+                "item's name gives the one next to it) --")
     if raw.get("text"):
         lines.append("Page text (start): " + raw["text"])
     if raw.get("view"):
@@ -1138,6 +1175,10 @@ class BrowserSession:
             return ("You clicked the middle of a drawing: in a spreadsheet that selects a cell in the middle, not A1. "
                     "Go to the first cell with keys {Ctrl+Home} (or type A1 in the Name box), then type with keys. "
                     "A drawing shows no text: check it with look.")
+        if out.startswith("Now at") and it.get("name"):
+            # Eval 25 Nov: the agent took e1 for "Next" on every page; on page 2 e1 is "Previous" (page 1, 2, 1, 2...)
+            clicked = f' (you clicked {ref} "{str(it["name"])[:60]}")'
+            out = re.sub(r"^Now at \S+", lambda m: m.group(0) + clicked, out, count=1)
         # Ticking a box changes no text: say what the click did, so the agent does not click it again.
         if self.url == before_url:
             try:
@@ -1308,6 +1349,10 @@ class BrowserSession:
                         raise
                     # Google Sheets lays a clear layer over its drawn grid: click where a person would click
                     loc.click(timeout=5000, force=True)
+                if el.get("role") == "canvas":
+                    # Drawn grids (Google Sheets) move the focus a moment after the click: keys typed at once lost
+                    # the first letter on a busy machine ("ate" instead of "Date").
+                    self.page.wait_for_timeout(300)
                 if clear:
                     kb.press("Control+A")
                     kb.press("Delete")

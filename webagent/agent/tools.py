@@ -459,7 +459,14 @@ def validate(name: str, args: dict) -> BaseModel:
         return TOOLS[name].model_validate(args)
     except ValidationError as exc:
         problems = "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()[:3])
-        raise ValueError(f"Wrong arguments for {name}: {problems}") from exc
+        fields = [f for f in TOOLS[name].model_fields if f != "why"]
+        given = set(args) - {"why"}
+        # Live run 25 Nov: note was called 3 times with {"answer": ...}; the model meant finish
+        fits = [t for t, m in TOOLS.items() if t != name and given and given <= set(m.model_fields)
+                and all(f in given for f, info in m.model_fields.items() if info.is_required() and f != "why")]
+        hint = f" {name} takes: {', '.join(fields)}." + (f" These arguments fit {fits[0]}: call {fits[0]} instead."
+                                                       if fits else "")
+        raise ValueError(f"Wrong arguments for {name}: {problems}.{hint}") from exc
 
 
 # ---------------------------------------------------------------- safety gate
@@ -796,10 +803,28 @@ EXTRACT_PROMPT = (
     "You pull facts out of one web page for a browsing agent. Use ONLY the page text below; never add facts from "
     "memory. Copy names, prices and numbers exactly as the page writes them. For lists (products, results), give "
     "one line per item: name | price | the asked details | the words of its link or button (so the agent can find "
-    "it). Mark a detail the page does not give as 'not shown'. The page is often already filtered (a label, a "
+    "it). Mark a detail the page does not give as 'not shown'. For one fact (a headline, a title, a date, a number) "
+    "write one plain line with just that fact: no columns, no 'not shown'. "
+    "Give a value only for the exact thing asked: if the page gives it for a related thing (the country, not its "
+    "capital city; the whole brand, not one product), write whose value it is, or 'not shown' for the asked thing. The page is often already filtered (a label, a "
     "folder, a search, a category): words in the request that describe the whole list (for example 'important "
     "emails' on the Important view) are not a test for each item, so list the items the page shows. Say "
-    "'Nothing found' only when the page really has no such items. Be short.")
+    "'Nothing found' only when the page really has no such items. Be short: each item ONCE (a page often shows the "
+    "same product twice, as a photo link and a title link), no repeated lines.")
+
+
+def _dedupe_lines(text: str) -> str:
+    """Drop repeated identical lines. With low reasoning the model sometimes loops on one line ("ThinkPad T470 |
+    SAR 1,245.00 | ..." 20 times on amazon.sa, 24 Nov)."""
+    out, seen, dropped = [], set(), 0
+    for line in text.splitlines():
+        key = re.sub(r"\s+", " ", line).strip(" -*• ").lower()
+        if key and len(key) > 12 and key in seen:
+            dropped += 1
+            continue
+        seen.add(key)
+        out.append(line)
+    return "\n".join(out) + (f"\n({dropped} repeated lines removed)" if dropped >= 3 else "")
 
 
 def _extract(browser: BrowserSession, llm: LLM, question: str, hint: str = "", task: str = "") -> ToolResult:
@@ -815,16 +840,28 @@ def _extract(browser: BrowserSession, llm: LLM, question: str, hint: str = "", t
                     "requirements are about (for example RAM, size, rating, date), even if the question above forgot it."
                     if task else "")}]
     try:
-        reply = llm.chat(messages, max_tokens=1500, temperature=0.0)
+        # Low reasoning: copying facts from a page needs little thought, and with medium reasoning the hidden
+        # reasoning used up the whole budget on a 48-item amazon.sa page, the reply came back EMPTY and was reported
+        # as "Nothing found", so the agent extracted the same page again and again (24 Nov: 41 steps, 624k tokens).
+        reply = llm.chat(messages, max_tokens=3000, temperature=0.0, reasoning="low")
     except LLMError as exc:
         return ToolResult(f"Could not extract: {exc}. Use find_in_page or read_page.")
-    answer = (reply.text or "").strip() or "Nothing found."
+    if not (reply.text or "").strip():
+        if getattr(reply, "cut", False):
+            return ToolResult("Could not extract: the reply was cut off before it gave anything. Ask for fewer details "
+                              "(only what the task needs), or use find_in_page.", ok=False, tokens=reply.tokens)
+        return ToolResult("Could not extract: the model gave no reply. Try once more or use find_in_page.", ok=False,
+                          tokens=reply.tokens)
+    answer = _dedupe_lines(reply.text.strip())
+    if getattr(reply, "cut", False):
+        answer += "\n(The list was cut off here: ask for fewer details or only the items that meet the task.)"
     if re.match(r"(?i)\W*(nothing|no (items|results|matches)) (found|match)", answer) and len(answer) < 120:
         hint += ("\nIf the page does show a list, ask again in plain words for the rows as they appear (for example "
                  "\"every row in the list: sender, subject, date\"), without describing words the rows may not show.")
     cut = " (the page was long: only its first 40000 characters were used)" if len(text) >= 40000 else ""
     last = browser.last.refs.values() if browser.last and browser.last.url == browser.url else []
-    if any(re.fullmatch(r"(next|next page|more results|show more|load more|[›»>]|التالي|الصفحة التالية|التالية|"
+    is_list = sum(1 for l in answer.splitlines() if l.strip()) >= 3   # one headline is not a list to page through
+    if is_list and any(re.fullmatch(r"(next|next page|more results|show more|load more|[›»>]|التالي|الصفحة التالية|التالية|"
                         r"المزيد|عرض المزيد|تحميل المزيد|المزيد من النتائج)", str(el.get("name") or "").strip(), re.I)
            for el in last):
         hint += ("\nThis list goes on: the page has a Next / Show more control. If the task needs the whole list (the "

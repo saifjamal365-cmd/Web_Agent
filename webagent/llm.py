@@ -33,12 +33,13 @@ class Reply:
     text: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     tokens: int = 0
+    cut: bool = False         # the reply hit max_tokens (finish "length"): it may be empty or end early
 
 
 class LLM(Protocol):
     def chat(self, messages: list[dict], *, tools: list[dict] | None = None, tool_choice: str | None = None,
              json_mode: bool = False, model: str | None = None, max_tokens: int = 1500,
-             temperature: float = 0.2) -> Reply: ...
+             temperature: float = 0.2, reasoning: str | None = None) -> Reply: ...
 
 
 def _friendly(exc: Exception) -> str:
@@ -112,7 +113,9 @@ class GroqLLM:
         self.retries = retries
 
     def chat(self, messages, *, tools=None, tool_choice=None, json_mode=False, model=None, max_tokens=1500,
-             temperature=0.2) -> Reply:
+             temperature=0.2, reasoning=None) -> Reply:
+        """reasoning: "low" / "medium" / "high" for gpt-oss (default medium). The hidden reasoning counts against
+        max_tokens: with too little room the reply comes back empty (finish "length")."""
         kwargs: dict[str, Any] = {"model": model or self.model, "messages": messages, "temperature": temperature,
                                   "max_completion_tokens": max_tokens}
         if tools:
@@ -122,7 +125,7 @@ class GroqLLM:
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         if (model or self.model).startswith("openai/gpt-oss"):
-            kwargs["reasoning_effort"] = "medium"
+            kwargs["reasoning_effort"] = reasoning or "medium"
         last: Exception | None = None
         for attempt in range(self.retries + 1):
             try:
@@ -137,7 +140,8 @@ class GroqLLM:
                     calls.append(ToolCall(name=tc.function.name, args=args if isinstance(args, dict) else {},
                                           id=tc.id))
                 tokens = getattr(resp.usage, "total_tokens", 0) or 0
-                return Reply(text=msg.content or "", tool_calls=calls, tokens=tokens)
+                return Reply(text=msg.content or "", tool_calls=calls, tokens=tokens,
+                             cut=getattr(resp.choices[0], "finish_reason", "") == "length")
             except Exception as exc:  # groq.* errors
                 last = exc
                 status = getattr(exc, "status_code", None)

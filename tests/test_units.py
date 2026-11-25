@@ -740,6 +740,42 @@ def test_going_back_and_forth_between_two_pages_is_stopped():
     assert _repeat_reason({"steps": mixed}, "click", {"ref": "e178"}, p1) is None
 
 
+def test_after_one_back_and_forth_warning_a_shorter_loop_is_stopped():
+    # Eval 25 Nov: after the first refusal the agent went page 1, 2, 1, 2 again until the next refusal, 3 times
+    from webagent.agent.graph import _repeat_reason
+    p1, p2 = "https://shop.test/s?page=1", "https://shop.test/s?page=2"
+    warn = _step("click", {"ref": "e2"}, "Refused: You went back and forth between a and b", url=p2, ok=False)
+    hop = lambda i, u: _n(_step("click", {"ref": f"e{i}"}, "Now at " + u, url=u), i)
+    steps = [_n(warn, 1), hop(2, p1), hop(3, p2), hop(4, p1)]
+    assert "back and forth" in _repeat_reason({"steps": steps}, "click", {"ref": "e1"}, p1)
+    assert _repeat_reason({"steps": steps[1:]}, "click", {"ref": "e1"}, p1) is None    # no warning before: not yet
+    paging = [_n(warn, 1), hop(2, p1), hop(3, p2), hop(4, "https://shop.test/s?page=3")]
+    assert _repeat_reason({"steps": paging}, "click", {"ref": "e1"}, p1) is None
+
+
+def test_a_link_that_never_changes_anything_is_not_clicked_a_third_time():
+    from webagent.agent.graph import _repeat_reason
+    u = "https://chat.test/inbox"
+    dead = lambda i: _n(_step("click", {"ref": "e1"}, "No visible text changed on the page.", url=u), i)
+    other = lambda i: _n(_step("scroll", {"direction": "down"}, "Scrolled down.", url=u), i)
+    steps = [dead(1), other(2), other(3), other(4), dead(5), other(6), other(7), other(8)]
+    assert "does nothing here" in _repeat_reason({"steps": steps}, "click", {"ref": "e1"}, u)
+    assert _repeat_reason({"steps": steps}, "click", {"ref": "e2"}, u) is None
+    assert _repeat_reason({"steps": steps[:4]}, "click", {"ref": "e1"}, u) is None
+
+
+def test_scrolling_a_page_already_read_whole_says_so():
+    from webagent.agent.graph import _whole_page_read
+    u = "https://shop.test/s"
+    read = _n(_step("extract", {"question": "every product"}, "From " + u + ":\nA | 10 EGP", url=u), 1)
+    scroll = _n(_step("scroll", {"direction": "down"}, "Scrolled down the page: now 4% down.", url=u), 2)
+    assert _whole_page_read({"steps": [read, scroll]}, u) == 1
+    clicked = _n(_step("click", {"ref": "e3"}, "New text on the page: Sorted", url=u), 3)
+    assert _whole_page_read({"steps": [read, scroll, clicked]}, u) is None       # the page changed since
+    part = _n(_step("read_page", {"part": 1}, "Page text, part 1 of 3 (" + u + "): ...", url=u), 1)
+    assert _whole_page_read({"steps": [part]}, u) is None                        # only a part was read
+
+
 # ---------------------------------------------------------------- reload in "new message" tasks, cart rules (24 Nov)
 
 def test_a_reload_lets_the_agent_read_a_chat_again():
@@ -862,3 +898,100 @@ def test_out_of_steps_hint_says_to_finish_not_to_fix_json():
     from webagent.agent.graph import FINAL_TOOLS, _invalid_call_hint
     assert "out of browsing steps" in _invalid_call_hint(set(FINAL_TOOLS))
     assert "valid JSON" in _invalid_call_hint({"click", "finish", "note"})
+
+
+# ---------------------------------------------------------------- token cost on big real pages (25 Nov)
+
+def test_an_empty_cut_off_extract_is_not_reported_as_nothing_found():
+    from types import SimpleNamespace
+    from webagent.llm import Reply
+    b = SimpleNamespace(full_text=lambda n: "Laptop A SAR 1,100\nLaptop B SAR 1,200", url="https://shop.test/s", last=None)
+    seen = {}
+
+    class Cut:
+        def chat(self, messages, **kw):
+            seen.update(kw)
+            return Reply(text="", tokens=1500, cut=True)
+    r = T._extract(b, Cut(), "every product: name, price")
+    assert not r.ok and "Nothing found" not in r.text and "cut off" in r.text
+    assert seen["reasoning"] == "low" and seen["max_tokens"] >= 3000
+
+
+def test_one_fact_from_a_page_with_a_next_button_does_not_say_the_list_goes_on():
+    # aljazeera.net, 25 Nov: the headline came with "This list goes on..." and the agent read the page 4 more times
+    from types import SimpleNamespace
+    from webagent.llm import Reply
+    url = "https://news.test/"
+    last = SimpleNamespace(url=url, refs={"e9": {"role": "link", "name": "المزيد"}})
+    b = SimpleNamespace(full_text=lambda n: "Big story\nOther story\nالمزيد", url=url, last=last)
+
+    def ext(reply_text):
+        class One:
+            def chat(self, messages, **kw):
+                return Reply(text=reply_text, tokens=10)
+        return T._extract(b, One(), "the main headline").text
+    assert "list goes on" not in ext("Big story")
+    assert "list goes on" in ext("Big story | 1\nOther story | 2\nThird story | 3")
+
+
+def test_arguments_meant_for_another_tool_name_that_tool():
+    # live Wikipedia run, 25 Nov: note was called 3 times with {"answer": ...} (meant for finish)
+    import pytest
+    with pytest.raises(ValueError) as e:
+        T.validate("note", {"answer": "Amman", "sources": ["https://ar.wikipedia.org"]})
+    assert "note takes: fact, source" in str(e.value) and "call finish instead" in str(e.value)
+    with pytest.raises(ValueError) as e:
+        T.validate("note", {"fact": "x"})
+    assert "instead" not in str(e.value)
+
+
+def test_extract_drops_lines_the_model_repeated():
+    text = "Items:\n" + "\n".join(["- T470 | SAR 1,245.00 | 16 GB"] * 6) + "\n- T490 | SAR 1,190.00 | 16 GB"
+    out = T._dedupe_lines(text)
+    assert out.count("T470") == 1 and "T490" in out and "5 repeated lines removed" in out
+
+
+def _items(n_nav, n_content, n_add):
+    items, k = [], 0
+    for i in range(n_nav):
+        k += 1; items.append({"ref": f"e{k}", "role": "link", "name": f"Menu {i}", "where": "view", "nav": True})
+    for i in range(n_add):
+        k += 1; items.append({"ref": f"e{k}", "role": "input:submit", "name": "Add to cart", "where": "view"})
+    for i in range(n_content):
+        k += 1; items.append({"ref": f"e{k}", "role": "link", "name": f"Lenovo laptop {i}", "where": "below"})
+    return items
+
+
+def test_big_pages_list_content_before_menus_and_repeated_buttons():
+    from webagent.browser.session import SHOW_ITEMS, format_snapshot
+    items = _items(60, 80, 30)
+    snap = format_snapshot({"url": "https://shop.test/s", "title": "", "items": items, "total": len(items)})
+    lines = snap.text.splitlines()
+    assert sum(1 for l in lines if "Lenovo laptop" in l) == 80            # every product link is listed
+    assert sum(1 for l in lines if "Add to cart" in l and l.startswith("e")) == 2
+    assert sum(1 for l in lines if "Menu " in l and l.startswith("e")) == SHOW_ITEMS - 82
+    assert '"add to cart" x30' in snap.text and len(snap.refs) == len(items)   # hidden ones keep their refs
+
+
+def test_pages_read_keeps_at_most_two_reads_of_one_page():
+    from webagent.agent.graph import _pages_read
+    u = "https://shop.test/s"
+    steps = [_n(_step("extract", {"question": f"q{i}"}, f"From {u}:\n| item {i} |", url=u), i) for i in range(1, 6)]
+    steps.append(_n(_step("scroll", {}, "Scrolled.", url=u), 6))
+    text = _pages_read({"steps": steps})
+    assert "item 4" in text and "item 5" in text and "item 3" not in text
+
+
+def test_page_numbers_and_products_that_differ_by_a_number_are_never_merged():
+    from webagent.browser.session import format_snapshot
+    items = _items(0, 0, 0)
+    k = 0
+    for name in ["1", "2", "3", "4", "Next", "ThinkPad T14", "ThinkPad T490", "ThinkPad T470"] + \
+                [f"SAR {1000 + i}.00 SAR{1000 + i} . 00" for i in range(10)] + [f"Filler {chr(65 + i)}{chr(65 + j)}"
+                                                                                   for i in range(10) for j in range(10)]:
+        k += 1
+        items.append({"ref": f"e{k}", "role": "link", "name": name, "where": "view"})
+    snap = format_snapshot({"url": "https://shop.test/s", "title": "", "items": items, "total": len(items)})
+    for name in ("\"2\"", "\"3\"", "\"4\"", "ThinkPad T14\"", "ThinkPad T490", "ThinkPad T470"):
+        assert name in snap.text
+    assert snap.text.count("SAR 10") == 2                                   # price links collapse

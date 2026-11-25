@@ -67,7 +67,7 @@ class FakeLLM:
         self.calls = []
 
     def chat(self, messages, *, tools=None, tool_choice=None, json_mode=False, model=None, max_tokens=1500,
-             temperature=0.2):
+             temperature=0.2, reasoning=None):
         system = messages[0]["content"] if isinstance(messages[0]["content"], str) else ""
         user = messages[-1]["content"] if isinstance(messages[-1]["content"], str) else ""
         self.calls.append({"json": json_mode, "user": user})

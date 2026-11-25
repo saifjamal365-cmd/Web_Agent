@@ -88,6 +88,9 @@ How you work:
   it, call finish and say it was not done because the person said no.
 - When the task is done, call finish with a complete, short answer in plain words: the result first, then the
   details (names, numbers, prices with currency, dates), and the source addresses in `sources`.
+  Give each number for the exact thing asked, and say whose it is ("Amman has about 4 million people", not "its
+  population"). A value you noted for a related thing (the country) is not the asked thing's (its capital city):
+  find the asked thing's own value (often on its own page) or say it was not found.
   If the task cannot be done, call give_up and say what you tried and why it failed.
 - Language: write your answer, ask_user questions and give_up reasons in the language of the TASK (Arabic task →
   Arabic answer; keep product names, prices and addresses as the page shows them). On the website use ITS
@@ -152,6 +155,14 @@ cell, rows missing), it is NOT OK, even if a later look only describes the table
 Products, versions or dates newer than your own knowledge are fine when the evidence shows them.
 It is NOT OK when it misses part of the task, invents facts that are not in the notes or step results,
 or answers a different question.
+Each fact must be about the exact thing the TASK asks about. A value the evidence gives for a related or larger
+thing does NOT support it: the country's population is not its capital city's, a brand's total is not one product's,
+last year's figure is not this year's. Read which thing each number in the evidence belongs to. If the answer gives
+such a value for the asked thing, it is NOT OK (fix "work": find the value for the asked thing itself). This holds
+when the answer's wording is vague ("its population") but the NOTES or STEP RESULTS say the number is the related
+thing's ("population of Jordan" in a task about Jordan's capital).
+When the TASK names two things (a country and its capital) and the answer gives a number with a vague owner ("its
+population", "عدد سكانها"), it is NOT OK (fix "answer": say whose number it is, as the evidence names it).
 A claim that an item meets a requirement (a spec like RAM, a price limit, a date) needs that value in the evidence
 for that item. A filter the agent clicked is NOT evidence that the items meet it.
 For "compare and choose" tasks, the answer only needs the chosen item, why it is the best fit, and the other

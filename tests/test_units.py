@@ -945,6 +945,68 @@ def test_arguments_meant_for_another_tool_name_that_tool():
     assert "instead" not in str(e.value)
 
 
+def test_an_answer_the_model_wrote_as_text_is_found():
+    # what gpt-oss wrote in the live Wikipedia run (25 Nov), refused as invalid tool calls
+    from webagent.agent.graph import _answer_from_text
+    a, src = _answer_from_text('{"name": "note", "arguments": The capital of Jordan is **عمّان**, population about '
+                               '4.8 million【https://ar.wikipedia.org/wiki/عمان】."}')
+    assert a.startswith("The capital of Jordan is عمّان") and "**" not in a and "【" not in a
+    assert src == ["https://ar.wikipedia.org/wiki/عمان"]
+    a, _ = _answer_from_text("**الإجابة:**   - عاصمة الأردن هي **عمان**، ويبلغ عدد سكانها نحو 4.8 مليون.")
+    assert a.startswith("- عاصمة الأردن هي عمان")
+    for not_answer in ("I will click the search button now.", "سأبحث عن الصفحة أولا ثم أقرأها", '{"ref": "e5"}',
+                       "to=functions.click {\"ref\": \"e5\"}", "ok"):
+        assert _answer_from_text(not_answer) is None, not_answer
+
+
+def test_a_scroll_that_loaded_more_items_lets_the_page_be_read_again():
+    from webagent.agent.graph import _read_before, _whole_page_read
+    u = "https://feed.test/"
+    read = _n(_step("extract", {"question": "every post"}, "From " + u + ":\nPost 1\nPost 2\nPost 3", url=u), 1)
+    plain = _n(_step("scroll", {"direction": "down"}, "Scrolled down the page: now 40% down.", url=u), 2)
+    grew = _n(_step("scroll", {"direction": "down"}, "Scrolled down the page: now 50% down. More content loaded as "
+                                                    "you scrolled (the page text grew by 2400 characters)", url=u), 3)
+    assert _read_before({"steps": [read, plain]}, u, "every post") == 1        # nothing new: use the earlier read
+    assert _read_before({"steps": [read, plain, grew]}, u, "every post") is None
+    assert _whole_page_read({"steps": [read, grew]}, u) is None
+
+
+def test_a_site_that_blocked_the_browser_is_not_opened_again():
+    # 25 Nov: noon drops the connection, Jarir and Lulu show Cloudflare block pages
+    from webagent.agent.graph import _repeat_reason
+    dropped = _n(_step("go_to", {"url": "https://www.noon.com/saudi-ar/"}, "Could not open https://www.noon.com/saudi-"
+                       "ar/: the site blocked the browser (it dropped the connection, ERR_HTTP2_PROTOCOL_ERROR)",
+                       url="about:blank", ok=False), 1)
+    page = _n(_step("go_to", {"url": "https://www.jarir.com/sa-ar/"}, "Opened https://www.jarir.com/sa-ar/ WARNING: "
+                    "this page is a bot check or a block page: the site blocked the browser.", url="https://www.jarir.com/sa-ar/"), 2)
+    st = {"steps": [dropped, page]}
+    assert "noon.com blocked the browser" in _repeat_reason(st, "go_to", {"url": "https://noon.com/saudi-ar/search?q=x"}, "")
+    assert "jarir.com blocked the browser" in _repeat_reason(st, "go_to", {"url": "https://www.jarir.com/"}, "")
+    assert _repeat_reason(st, "go_to", {"url": "https://www.extra.com/ar-sa/"}, "") is None
+
+
+def test_scrolling_a_page_read_whole_is_stopped_after_two_tries():
+    # live amazon.eg, 25 Nov: told twice that scrolling shows nothing new, the agent scrolled 9 more times
+    from webagent.agent.graph import _repeat_reason
+    u = "https://shop.test/s"
+    read = _n(_step("extract", {"question": "every product"}, "From " + u + ":\nA | 10 EGP", url=u), 1)
+    sc = lambda i: _n(_step("scroll", {"direction": "down"}, f"Scrolled down the page: now {i * 5}% down.", url=u), i)
+    assert _repeat_reason({"steps": [read, sc(2)]}, "scroll", {"direction": "down"}, u) is None
+    assert "nothing new" in _repeat_reason({"steps": [read, sc(2), sc(3)]}, "scroll", {"direction": "down"}, u)
+    assert _repeat_reason({"steps": [sc(2), sc(3)]}, "scroll", {"direction": "down"}, u) is None   # never read
+
+
+def test_the_same_page_search_is_not_repeated_a_third_time():
+    from webagent.agent.graph import _repeat_reason
+    u = "https://shop.test/s"
+    a = lambda i: _n(_step("find_in_page", {"words": "Kettle 1000 Add to cart"}, "Paragraphs that match ...", url=u), i)
+    b = lambda i: _n(_step("find_in_page", {"words": "Kettle 1000 grey Add to cart"}, "Paragraphs that match ...", url=u), i)
+    steps = [a(1), b(2), a(3), b(4)]
+    assert "product NAME only" in _repeat_reason({"steps": steps}, "find_in_page", {"words": "kettle 1000  add to cart"}, u)
+    assert _repeat_reason({"steps": steps}, "find_in_page", {"words": "Kettle 1000"}, u) is None
+    assert _repeat_reason({"steps": steps}, "find_in_page", {"words": "Kettle 1000 Add to cart"}, u + "?page=2") is None
+
+
 def test_extract_drops_lines_the_model_repeated():
     text = "Items:\n" + "\n".join(["- T470 | SAR 1,245.00 | 16 GB"] * 6) + "\n- T490 | SAR 1,190.00 | 16 GB"
     out = T._dedupe_lines(text)

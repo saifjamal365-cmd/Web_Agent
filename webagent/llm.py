@@ -181,8 +181,10 @@ class GroqLLM:
                 log.warning("Groq call failed (%s), retry %s in %.1fs", type(exc).__name__, attempt + 1, wait)
                 time.sleep(wait)
         if last is not None and getattr(last, "status_code", None) == 400 and "tool_use_failed" in str(last):
-            # Recover the model's intent when it printed the call as text.
-            raise LLMError("The model produced an invalid tool call.")
+            # Keep what the model wrote: often it is the final answer as plain text (the agent can still use it).
+            err = LLMError("The model produced an invalid tool call.")
+            err.text = _failed_generation(last)
+            raise err
         raise LLMError(_friendly(last)) from last
 
 

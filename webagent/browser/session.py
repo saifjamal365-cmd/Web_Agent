@@ -449,6 +449,22 @@ def load_sessions(folder: Path | None, only: str | None = None) -> dict | None:
     return {"cookies": cookies, "origins": origins}
 
 
+GREW_MARK = "More content loaded"
+SITE_BLOCKED = "blocked the browser"   # in step results: the agent must not open that site again in the task
+BLOCK_HINT = ("Do not try to solve or get around it, and do not open this site again in this task: get the same "
+              "information from another website, and say in your answer that this site blocked the browser.")
+# The server dropped the connection before any page (25 Nov: noon.com, ERR_HTTP2_PROTOCOL_ERROR in Chromium and no
+# reply at all to curl): what bot protection does to automated browsers. Not ERR_CONNECTION_REFUSED (a site that is down).
+_DROPPED = re.compile(r"ERR_(HTTP2_PROTOCOL_ERROR|CONNECTION_RESET|EMPTY_RESPONSE|CONNECTION_CLOSED|BLOCKED_BY_RESPONSE)")
+# Same test as in the snapshot (keep the two the same): a CAPTCHA, a bot check or a block page.
+BOT_CHECK_JS = r"""() => {
+  const clean = s => (s || '').replace(/\s+/g, ' ').trim();
+  return !!document.querySelector('iframe[src*="recaptcha"],iframe[src*="hcaptcha"],iframe[src*="challenges.cloudflare"],#challenge-form,.g-recaptcha,.h-captcha')
+    || /verify (that )?you are (a )?human|are you a robot|not a (ro)?bot|made by a human|unusual traffic|press (and|&) hold|you have been blocked|request (was |has been )?blocked/i.test(clean(document.body ? document.body.innerText : '').slice(0, 3000))
+    || /^(attention required|just a moment|access denied|pardon our interruption|request blocked|security check)/i.test(clean(document.title));
+}"""
+
+
 class BrowserError(Exception):
     """A browser action failed. The message is shown to the model so it can try something else."""
 
@@ -973,8 +989,42 @@ class BrowserSession:
             if exact or (words and all(w in name for w in words)):
                 hits.append((0 if exact else 1, len(name), it))
         hits.sort(key=lambda h: (h[0], h[1]))
-        return [f'{it["ref"]} [{it["role"]}] "{it["name"]}"' + (" (disabled)" if it.get("disabled") else "")
-                for _, _, it in hits[:limit]]
+        hits = hits[:limit]
+        cards = self._card_buttons([it["ref"] for _, _, it in hits[:4] if it.get("role") == "link"
+                                    and len(str(it.get("name") or "")) >= 20 and it.get("frame") is None])
+        out = []
+        for _, _, it in hits:
+            out.append(f'{it["ref"]} [{it["role"]}] "{it["name"]}"' + (" (disabled)" if it.get("disabled") else ""))
+            near = [self.last.refs.get(r) or {} for r in cards.get(it["ref"], [])]
+            near = [f'{b["ref"]} [{b.get("role")}] "{str(b.get("name") or "")[:40]}"' for b in near if b.get("ref")]
+            if near:
+                out.append("   in the same card: " + ", ".join(near))
+        return out
+
+    def _card_buttons(self, refs: list[str]) -> dict[str, list[str]]:
+        """The buttons in each product card (around a product link). Live amazon.eg, 25 Nov: "Add to cart" shows
+        23 times on a results page, so only 2 are listed, and the agent spent 18 find_in_page calls looking for the
+        one of its product."""
+        if not refs:
+            return {}
+        try:
+            return self.page.evaluate(r"""refs => {
+              const out = {};
+              const isBtn = e => e.tagName === 'BUTTON' || e.getAttribute('role') === 'button'
+                || (e.tagName === 'INPUT' && /^(submit|button)$/i.test(e.type));
+              for (const ref of refs) {
+                const el = document.querySelector('[data-wa-ref="' + ref + '"]');
+                let p = el && el.parentElement;
+                for (let i = 0; p && p !== document.body && i < 10; i++, p = p.parentElement) {
+                  if ((p.innerText || '').length > 2000) break;
+                  const btns = [...p.querySelectorAll('[data-wa-ref]')].filter(b => b !== el && isBtn(b));
+                  if (btns.length) { out[ref] = btns.slice(0, 3).map(b => b.getAttribute('data-wa-ref')); break; }
+                }
+              }
+              return out;
+            }""", refs) or {}
+        except Exception:
+            return {}
 
     def find_text(self, query: str, limit: int = 3500) -> str:
         text = self.page.evaluate(READ_JS) or ""
@@ -1148,8 +1198,18 @@ class BrowserSession:
                 if attempt == 1 and "interrupted by another navigation" in str(exc):
                     self.page.wait_for_timeout(500)
                     continue
+                dropped = _DROPPED.search(str(exc))
+                if dropped:
+                    raise BrowserError(f"Could not open {url}: the site {SITE_BLOCKED} (it dropped the connection, "
+                                       f"{dropped.group(0)}: usually its bot protection). {BLOCK_HINT}") from exc
                 raise BrowserError(f"Could not open {url}: {str(exc).splitlines()[0][:200]}") from exc
         self.settle()
+        try:
+            bot_check = bool(self.page.evaluate(BOT_CHECK_JS))
+        except Exception:
+            bot_check = False
+        if bot_check:
+            return f"Opened {self.url} WARNING: this page is a bot check or a block page: the site {SITE_BLOCKED}. {BLOCK_HINT}"
         empty = self._no_results_line()
         if empty:
             return (f'Opened {self.url} The page says: "{empty}". If your search words were right, that is the '
@@ -1464,6 +1524,22 @@ class BrowserSession:
         """Scroll the part of the page that scrolls: the page itself, or the inner pane under the middle of the
         screen (chats, mail, web apps). The wheel used to turn wherever the mouse was, so in Google Chat nothing
         moved and the agent was told "Scrolled down." anyway."""
+        before = self._text_length()
+        out = self._scroll(direction)
+        grown = self._text_length() - before
+        if before and grown > 300 and not out.startswith("Could not"):
+            # Infinite lists (feeds, some shops) load more items as you scroll: say so, so the agent reads them
+            out += (f" {GREW_MARK} as you scrolled (the page text grew by {grown} characters): extract or read_page "
+                    "again to see the new items.")
+        return out
+
+    def _text_length(self) -> int:
+        try:
+            return int(self.page.evaluate("() => document.body ? document.body.innerText.length : 0") or 0)
+        except Exception:
+            return 0
+
+    def _scroll(self, direction: str) -> str:
         up = direction.lower().startswith("up")
         dy = -700 if up else 700
         word = "up" if up else "down"

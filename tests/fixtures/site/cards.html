@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Kettles - Test Shop</title></head>
+<body>
+<h1>Kettles</h1>
+<p id="msg"></p>
+<div id="grid"></div>
+<script>
+  // 30 product cards, each with its own "Add to cart" button (like a big shop's results page)
+  const grid = document.getElementById('grid');
+  for (let n = 1; n <= 30; n++) {
+    const card = document.createElement('div');
+    card.innerHTML = `<a href="#k${n}">Steel kettle model ${n}, 1.7 litre, 2200 watt</a>
+      <span>${(100 + n * 7).toFixed(2)} JOD</span> <button>Add to cart</button>`;
+    card.querySelector('button').onclick = () => { document.getElementById('msg').textContent = 'Added to cart: model ' + n; };
+    grid.appendChild(card);
+  }
+</script>
+</body></html>

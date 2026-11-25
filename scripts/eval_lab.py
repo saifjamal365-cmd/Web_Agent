@@ -206,14 +206,21 @@ def run_one(spec, timeout=420):
     RUN["id"] = str(time.time())
     t0 = time.time()
     t = call("POST", "/api/tasks", {"request": spec["request"]})
-    approvals = 0
+    approvals, approved = 0, []
     while time.time() - t0 < timeout:
         d = call("GET", f"/api/tasks/{t['id']}")
         p = d.get("pending")
         if p:
             if p["kind"] == "approval":
                 approvals += 1
-                call("POST", f"/api/tasks/{t['id']}/approve", {"approved": spec.get("approval") == "approve"})
+                ok = spec.get("approval") == "approve"
+                what = json.dumps(p.get("action") or {}, ensure_ascii=False) + " " + str(p.get("message") or "")
+                if spec.get("approve_only"):
+                    # approve only these actions (a real-site cart run: add to cart yes, checkout or sign-in no)
+                    ok = bool(re.search(spec["approve_only"], what, re.I | re.S))
+                if ok:
+                    approved.append(what[:200])
+                call("POST", f"/api/tasks/{t['id']}/approve", {"approved": ok})
             else:
                 login = (p.get("action") or {}).get("tool") == "login"
                 call("POST", f"/api/tasks/{t['id']}/reply",
@@ -259,7 +266,7 @@ def run_one(spec, timeout=420):
     return {"id": spec["id"], "category": spec.get("category", ""), "task_id": d["id"], "passed": not problems,
             "problems": problems, "status": d["status"], "seconds": round(time.time() - t0, 1),
             "steps": d["steps_count"], "tokens": d["tokens"], "cost_usd": round(d["tokens"] * PRICE / 1e6, 4),
-            "approvals": approvals, "asked": asked, "logins": logins, "tools": tools, "answer": answer[:300],
+            "approvals": approvals, "approved": approved, "asked": asked, "logins": logins, "tools": tools, "answer": answer[:300],
             "trace": M.trace_of(d)}
 
 

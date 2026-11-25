@@ -102,3 +102,31 @@ def test_long_page_says_how_to_read_the_next_part(browser, site_url):
     assert "part 1 of" in first and "read_page with part=2" in first and "Scrolling does not change" in first
     whole = browser.read_text()
     assert "part 1 of 1" in whole and "read_page with part=" not in whole
+
+
+def test_scroll_says_when_an_endless_list_loaded_more(browser, site_url):
+    browser.goto(site_url + "/infinite.html")
+    out = ""
+    for _ in range(4):
+        out = browser.scroll("down")
+        if "More content loaded" in out:
+            break
+    assert "More content loaded" in out and "extract or read_page again" in out
+    assert "Kettle model 21" in browser.full_text(40000)
+
+
+def test_opening_a_bot_check_page_says_the_site_blocked_the_browser(browser, site_url):
+    out = browser.goto(site_url + "/captcha.html")
+    assert "blocked the browser" in out and "another website" in out
+    assert "blocked" not in browser.goto(site_url + "/index.html")
+
+
+def test_finding_a_product_shows_its_own_add_to_cart_button(browser, site_url):
+    # 30 "Add to cart" buttons: the page list shows only 2, so the product's own button comes with find_in_page
+    browser.goto(site_url + "/cards.html")
+    browser.snapshot()
+    out = browser.find_text("Steel kettle model 17")
+    line = next(l for l in out.splitlines() if "in the same card" in l)
+    ref = line.split("in the same card:")[1].split()[0]
+    assert "Add to cart" in line
+    assert "model 17" in browser.click(ref)

@@ -23,7 +23,7 @@ from langgraph.types import Command, interrupt
 from webagent import files as F
 from webagent.agent import memory, prompts, safety
 from webagent.agent import tools as T
-from webagent.browser.session import BrowserError, BrowserSession, Snapshot, _domain_match
+from webagent.browser.session import GREW_MARK, SITE_BLOCKED, BrowserError, BrowserSession, Snapshot, _domain_match
 from webagent.config import settings
 from webagent.llm import LLM, LLMError, parse_json
 
@@ -276,11 +276,16 @@ def _read_before(state: AgentState, url: str, question: str) -> int | None:
             if "Nothing found" in str(s.get("result") or "")[:400]:   # the page may still have been loading
                 return None
             later = [t for t in steps[i + 1:] if t.get("url") == url]
-            changed = any(t.get("tool") not in _LOOK_ONLY and not (
+            changed = any(_grew(t) for t in later) or any(t.get("tool") not in _LOOK_ONLY and not (
                 t.get("tool") == "click" and str(t.get("result") or "").startswith("Now at")) for t in later) or any(
                 t.get("tool") == "check" and "was just reloaded" in str(t.get("result") or "") for t in later)
             return None if changed or _reloaded(state, i, url) else s.get("n")
     return None
+
+
+def _grew(step: dict) -> bool:
+    """A scroll that loaded more items (an infinite list): the page has new content to read."""
+    return step.get("tool") == "scroll" and GREW_MARK in str(step.get("result") or "")
 
 
 def _whole_page_read(state: AgentState, url: str) -> int | None:
@@ -297,7 +302,7 @@ def _whole_page_read(state: AgentState, url: str) -> int | None:
                                         not in res[:300]) or (s.get("tool") == "read_page" and " part 1 of 1 " in res[:60]))
         if whole:
             return s.get("n")
-        if s.get("tool") not in _LOOK_ONLY:
+        if s.get("tool") not in _LOOK_ONLY or _grew(s):
             return None
     return None
 
@@ -432,6 +437,9 @@ def decide(state: AgentState, config) -> dict:
             reply = ctx.llm.chat(retry, tools=T.schemas(only, missing), tool_choice="required", max_tokens=2000,
                                  temperature=0.0)
     except LLMError as exc:
+        meant = _answer_from_text(getattr(exc, "text", "")) if "finish" in only else None
+        if meant:
+            return _as_finish(meant, browser.url, only)
         if "invalid tool call" in str(exc):
             hint = _invalid_call_hint(only)
             return {**_record(ctx, state, {"tool": "model", "args": {}, "why": "", "result": str(exc) + " " + hint,
@@ -440,12 +448,47 @@ def decide(state: AgentState, config) -> dict:
     ctx.on_tokens(reply.tokens)
     if not reply.tool_calls:
         text = (reply.text or "").strip()
+        meant = _answer_from_text(text) if "finish" in only else None
+        if meant:
+            return _as_finish(meant, browser.url, only)
         return {**_record(ctx, state, {"tool": "model", "args": {}, "why": "", "ok": False, "url": browser.url,
                                        "result": "No tool was called" + (f": {text[:200]}" if text else ".")}),
                 "pending": None, "feedback": "You must call exactly one tool (use finish to answer)."}
     call = reply.tool_calls[0]
     return {"pending": {"name": call.name, "args": call.args, "url": browser.url, "tools": sorted(only)},
             "decision": None, "current_url": browser.url}
+
+
+_PLAN_TALK = re.compile(r"^\W*(i will|i'll|i need|i should|let me|let's|next|now i|first|to answer|we need|"
+                        r"سأ|سوف|دعني|أحتاج|يجب أن)", re.I)
+
+
+def _answer_from_text(text: str) -> tuple[str, list[str]] | None:
+    """The final answer the model wrote as plain text instead of calling finish (live Wikipedia run, 25 Nov: a
+    markdown answer, and {"name": "note", "arguments": <the answer as prose>}, each refused as an invalid tool call
+    and a step lost). Returns (answer, sources), or None when the text is not an answer (a plan, a broken call)."""
+    text = (text or "").strip()
+    m = re.search(r'"arguments"\s*:\s*(?!\{)"?(.+?)"?\s*\}?\s*$', text, re.S)
+    if m:
+        text = m.group(1).strip()
+    if text.startswith(("{", "[")) or "functions." in text or "to=" in text:
+        return None
+    sources = re.findall(r"https?://[^\s\]】)\"']+", text)
+    answer = re.sub(r"【[^】]*】", "", text)
+    answer = re.sub(r"\*\*|__", "", answer).strip()
+    answer = re.sub(r"^\W*(answer|final answer|الإجابة|الجواب)\s*[:：]\s*", "", answer, flags=re.I).strip()
+    if len(answer) < 15 or _PLAN_TALK.match(answer):
+        return None
+    return answer, sources
+
+
+def _as_finish(meant: tuple[str, list[str]], url: str, only: set[str]) -> dict:
+    answer, sources = meant
+    log.info("The model wrote its answer as text: treated as finish (the checker still checks it).")
+    return {"pending": {"name": "finish", "url": url, "tools": sorted(only),
+                        "args": {"answer": answer, "sources": sources or ([url] if url.startswith("http") else []),
+                                 "why": "The model wrote its final answer as text instead of calling finish"}},
+            "decision": None, "current_url": url}
 
 
 def _invalid_call_hint(offered: set[str]) -> str:
@@ -634,7 +677,13 @@ def gate(state: AgentState, config) -> dict:
     try:
         args = T.validate(p["name"], p["args"])
     except ValueError as exc:
-        return {"decision": {"refused": str(exc)}}
+        if "call finish instead" not in str(exc) or "finish" not in (p.get("tools") or ["finish"]):
+            return {"decision": {"refused": str(exc)}}
+        # note with {"answer": ...} (3 times in one live run): the model meant finish, which the checker still checks
+        log.info("Arguments for %s fit finish: treated as finish.", p["name"])
+        p = {**p, "name": "finish"}
+        args = T.validate("finish", p["args"])
+        return {"pending": p, "decision": {"approved": True}}
     if ctx.resume_key:
         # The person decided while no browser was open: the page was opened again. Only go on if the element is
         # the same one they saw; otherwise the agent must look again (and ask again).
@@ -738,10 +787,29 @@ def _ping_pong(recent: list[dict]) -> bool:
 def _repeat_reason(state: AgentState, name: str, raw_args: dict | None, url: str) -> str | None:
     """In code, not only in the prompt: the same action on the same page a 3rd time, after it already gave the
     same result twice, cannot help. Refuse it so the model must try something else."""
+    if name == "scroll":
+        n = _whole_page_read(state, url)
+        later = [s for s in state.get("steps") or [] if (s.get("n") or 0) > (n or 0) and s.get("url") == url
+                 and s.get("tool") == "scroll" and s.get("ok", True)]
+        if n and len(later) >= 2:
+            # Live amazon.eg, 25 Nov: told twice that scrolling shows nothing new, the agent scrolled 9 more times
+            return (f"You already read this whole page's text at step {n} and scrolled {len(later)} times since: "
+                    "scrolling shows you nothing new. Use what you read (PAGES YOU ALREADY READ): note the answer and "
+                    "finish, or act on an element (find_in_page gives its ref).")
     if name in REPEAT_OK:
         return None
     args = {k: v for k, v in (raw_args or {}).items() if k != "why"}
     if name == "go_to" and args.get("url"):
+        site = safety.domain_of(str(args["url"]))
+        for s in state.get("steps") or []:
+            if SITE_BLOCKED not in str(s.get("result") or ""):
+                continue
+            where = str((s.get("args") or {}).get("url") or "") if s.get("tool") == "go_to" else str(s.get("url") or "")
+            if site and _domain_match(safety.domain_of(where), site):
+                # 25 Nov: noon, Jarir and Lulu block automated browsers; trying again only wastes steps
+                return (f"{site} blocked the browser earlier in this task (step {s.get('n')}). Never try to get "
+                        "around a block: get the same information from another website, and say in your answer that "
+                        f"{site} blocked the browser.")
         # Back-and-forth loops (open A, back, open A, ...) are not caught by "the same action twice in a row".
         target = str(args["url"]).strip().rstrip("/")
         opened = [s for s in (state.get("steps") or []) if s.get("tool") == "go_to" and s.get("ok", True)
@@ -773,6 +841,16 @@ def _repeat_reason(state: AgentState, name: str, raw_args: dict | None, url: str
             return (f"You clicked {args.get('ref')} on this page {len(dead)} times already and it never changed "
                     "anything. It does nothing here: do not click it again. Read the page (read_page / find_in_page), "
                     "use another element, or go_to this page again to reload it.")
+    if name == "find_in_page":
+        words = _norm_text(str(args.get("words") or ""))
+        asked = [s for s in steps if s.get("tool") == "find_in_page" and s.get("url") == url and s.get("ok", True)
+                 and not str(s.get("result") or "").startswith("Refused")
+                 and _norm_text(str((s.get("args") or {}).get("words") or "")) == words]
+        if len(asked) >= 2:
+            # Live amazon.eg cart run, 25 Nov: two searches alternated 12 times ("<product> + Add to cart")
+            return (f"You already searched this page for these words {len(asked)} times: the answer will not change. "
+                    "To find a product's button, search for the product NAME only: the result lists the buttons in "
+                    "its card. Or open the product page and use the button there. Otherwise use what you found.")
     same =[s for s in recent if s.get("tool") == name and (s.get("args") or {}) == args and s.get("url") == url
             and s.get("ok", True) and not str(s.get("result") or "").startswith("Refused")]
     if len(same) >= 2 and same[-1].get("result") == same[-2].get("result"):
@@ -860,7 +938,7 @@ def execute(state: AgentState, config) -> dict:
         # "nothing meets the criteria". Say what the next steps are.
         res.text += (" The item is in the cart now. Next: open the cart to check it, then finish with that item "
                      "(name, price, why it is the best match, the other options in a few words). Do not shop on.")
-    if name == "scroll" and res.ok:
+    if name == "scroll" and res.ok and GREW_MARK not in res.text:
         n = _whole_page_read(state, ctx.browser.url)
         if n:
             res.text += (f" (You already read this whole page's text at step {n}: scrolling does not show you more "

@@ -247,3 +247,31 @@ def test_a_login_that_could_not_be_saved_is_not_asked_again():
         assert "Do not ask again" in out["decision"]["refused"]
     finally:
         graph.CONTEXTS.pop("t-login", None)
+
+
+def test_note_called_with_an_answer_is_treated_as_finish(site_url):
+    # live Wikipedia run, 25 Nov: note was called 3 times with {"answer": ...}; each refusal cost a step
+    llm = FakeLLM([
+        ("go_to", {"url": site_url + "/product-laptop.html"}),
+        ("note", {"answer": "The Aero Laptop 14 costs 999.00 JOD.", "sources": [site_url + "/product-laptop.html"]}),
+    ])
+    t = db.create_task("What does the Aero Laptop cost on the test shop?", None, None)
+    out = run_task(t["id"], llm=llm, poll=0.1)
+    assert out["status"] == "done" and "999.00 JOD" in out["answer"], out
+    assert [s["tool"] for s in db.get_steps(t["id"])][:2] == ["go_to", "finish"]
+
+
+def test_an_answer_written_as_text_is_treated_as_finish(site_url):
+    from webagent.llm import Reply
+
+    class TextAnswer(FakeLLM):
+        def chat(self, messages, **kw):
+            if not kw.get("json_mode") and not self.script and not getattr(self, "said", False):
+                self.said = True
+                return Reply(text="**Answer:** The Aero Laptop 14 costs 999.00 JOD.", tokens=10)
+            return super().chat(messages, **kw)
+
+    llm = TextAnswer([("go_to", {"url": site_url + "/product-laptop.html"})])
+    t = db.create_task("What does the Aero Laptop cost on the test shop?", None, None)
+    out = run_task(t["id"], llm=llm, poll=0.1)
+    assert out["status"] == "done" and out["answer"].startswith("The Aero Laptop 14 costs 999.00 JOD"), out

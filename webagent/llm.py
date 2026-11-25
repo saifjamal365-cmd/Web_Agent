@@ -69,6 +69,21 @@ def _failed_generation(exc: Exception) -> str:
     return m.group(1) if m else ""
 
 
+def _retry_after(exc: Exception, body: str) -> float | None:
+    """How long Groq asks us to wait: the retry-after header, or "try again in 1m2.5s" / "in 7.2s" in the message."""
+    headers = getattr(getattr(exc, "response", None), "headers", None) or {}
+    try:
+        value = headers.get("retry-after")
+        if value:
+            return float(value)
+    except (TypeError, ValueError, AttributeError):
+        pass
+    m = re.search(r"try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)?s?", body)
+    if m and any(m.groups()):
+        return int(m.group(1) or 0) * 3600 + int(m.group(2) or 0) * 60 + float(m.group(3) or 0)
+    return None
+
+
 def recover_tool_call(text: str, tool_names: set[str]) -> ToolCall | None:
     """Rebuild the tool call the model meant from the text it wrote. gpt-oss sometimes writes the call in its own
     channel format or wraps it as {"name": ..., "arguments": ...}; a live Gmail run lost 4 steps (and minutes of
@@ -127,7 +142,9 @@ class GroqLLM:
         if (model or self.model).startswith("openai/gpt-oss"):
             kwargs["reasoning_effort"] = reasoning or "medium"
         last: Exception | None = None
-        for attempt in range(self.retries + 1):
+        # A rate limit gets 3 more tries than other errors: live run 25 Nov, two tasks failed after ~30 s of short
+        # waits while Groq's per-minute limit needed longer.
+        for attempt in range(self.retries + 4):
             try:
                 resp = self.client.chat.completions.create(**kwargs)
                 msg = resp.choices[0].message
@@ -170,14 +187,19 @@ class GroqLLM:
                     log.warning("Model wrote an invalid tool call: %s", text[:300].replace("\n", " "))
                     if attempt >= 1:
                         break
+                limited = status == 429 or type(exc).__name__ == "RateLimitError"
                 retryable = status in (408, 409, 429, 500, 502, 503, 504) or type(exc).__name__ in (
                     "APIConnectionError", "APITimeoutError", "RateLimitError", "InternalServerError") or bad_call
-                if not retryable or attempt == self.retries:
+                if not retryable or attempt >= self.retries + (3 if limited else 0):
                     break
                 wait = min(30.0, 2 ** attempt + random.random())
-                m = re.search(r"try again in ([\d.]+)s", body)
-                if m:
-                    wait = min(60.0, float(m.group(1)) + 0.5)
+                if limited:
+                    wait = max(wait, 5.0 * (attempt + 1))   # a per-minute limit needs seconds, not 1-2 s
+                asked = _retry_after(exc, body)
+                if asked is not None:
+                    if asked > 120:   # a daily limit: waiting here would hold the task for many minutes
+                        break
+                    wait = min(90.0, asked + 0.5)
                 log.warning("Groq call failed (%s), retry %s in %.1fs", type(exc).__name__, attempt + 1, wait)
                 time.sleep(wait)
         if last is not None and getattr(last, "status_code", None) == 400 and "tool_use_failed" in str(last):

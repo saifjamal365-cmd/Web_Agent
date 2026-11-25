@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from urllib.parse import unquote
 import re
 import time
 from dataclasses import dataclass, field
@@ -25,7 +26,7 @@ from webagent.agent import memory, prompts, safety
 from webagent.agent import tools as T
 from webagent.browser.session import GREW_MARK, SITE_BLOCKED, BrowserError, BrowserSession, Snapshot, _domain_match
 from webagent.config import settings
-from webagent.llm import LLM, LLMError, parse_json
+from webagent.llm import LLM, LLMError, parse_json, recover_tool_call
 
 log = logging.getLogger(__name__)
 
@@ -288,6 +289,10 @@ def _grew(step: dict) -> bool:
     return step.get("tool") == "scroll" and GREW_MARK in str(step.get("result") or "")
 
 
+REMOVED = re.compile(r"(was|were|has been|have been) (removed|deleted) from|removed from (your )?(cart|basket|bag)|"
+                     r"تم\s+(حذف|إزالة)|تمت\s+(إزالة|الإزالة)|(حذف|أزيل)\w*\s+من\s+(عربة|سلة|السلة)", re.I)
+
+
 def _whole_page_read(state: AgentState, url: str) -> int | None:
     """The step that read this whole page's text (extract, or read_page of a 1-part page), if nothing on the page
     changed since. Live amazon.eg, 25 Nov: after extract had read the whole results page, the agent scrolled 4
@@ -432,17 +437,23 @@ def decide(state: AgentState, config) -> dict:
         except LLMError as first:
             if "invalid tool call" not in str(first):
                 raise
+            rescued = _rescue(getattr(first, "text", ""), only, browser.url)
+            if rescued:
+                return rescued
             # Open models sometimes write broken JSON: ask once more at once (no step spent), more strictly.
             retry = messages + [{"role": "user", "content": _invalid_call_hint(only)}]
             reply = ctx.llm.chat(retry, tools=T.schemas(only, missing), tool_choice="required", max_tokens=2000,
                                  temperature=0.0)
     except LLMError as exc:
-        meant = _answer_from_text(getattr(exc, "text", "")) if "finish" in only else None
-        if meant:
-            return _as_finish(meant, browser.url, only)
+        rescued = _rescue(getattr(exc, "text", ""), only, browser.url)
+        if rescued:
+            return rescued
         if "invalid tool call" in str(exc):
             hint = _invalid_call_hint(only)
-            return {**_record(ctx, state, {"tool": "model", "args": {}, "why": "", "result": str(exc) + " " + hint,
+            wrote = re.sub(r"\s+", " ", str(getattr(exc, "text", "") or ""))[:160]
+            log.warning("Invalid tool call not recovered: %s", wrote)
+            return {**_record(ctx, state, {"tool": "model", "args": {}, "why": "", "result": str(exc) + " " + hint +
+                                           (f" (You wrote: {wrote})" if wrote else ""),
                                            "ok": False, "url": browser.url}), "pending": None, "feedback": hint}
         return {"status": "failed", "answer": str(exc), "pending": None}
     ctx.on_tokens(reply.tokens)
@@ -471,7 +482,14 @@ def _answer_from_text(text: str) -> tuple[str, list[str]] | None:
     m = re.search(r'"arguments"\s*:\s*(?!\{)"?(.+?)"?\s*\}?\s*$', text, re.S)
     if m:
         text = m.group(1).strip()
-    if text.startswith(("{", "[")) or "functions." in text or "to=" in text:
+    bare = re.match(r'\s*\{\s*"answer"\s*:\s*"((?:[^"\\]|\\.)*)', text, re.S)
+    if bare:
+        # {"answer": "..."} with no tool name (live cart check, 25 Nov: twice, each lost as an invalid call)
+        try:
+            text = json.loads('"' + bare.group(1) + '"')
+        except ValueError:
+            text = bare.group(1)
+    elif text.startswith(("{", "[")) or "functions." in text or "to=" in text:
         return None
     sources = re.findall(r"https?://[^\s\]】)\"']+", text)
     answer = re.sub(r"【[^】]*】", "", text)
@@ -480,6 +498,21 @@ def _answer_from_text(text: str) -> tuple[str, list[str]] | None:
     if len(answer) < 15 or _PLAN_TALK.match(answer):
         return None
     return answer, sources
+
+
+def _rescue(text: str, only: set[str], url: str) -> dict | None:
+    """What the model meant by a tool call Groq refused. Groq checks the call against the tools offered at this step;
+    a call to another known tool (another group, or a browsing tool in the last steps) comes back as "invalid" with
+    no reason. Rebuilt against ALL tools, it goes to the gate, which runs it (harmless groups) or says why not."""
+    if not text:
+        return None
+    call = recover_tool_call(text, set(T.TOOLS))
+    if call:
+        log.info("Rebuilt a refused tool call: %s", call.name)
+        return {"pending": {"name": call.name, "args": call.args, "url": url, "tools": sorted(only)},
+                "decision": None, "current_url": url}
+    meant = _answer_from_text(text) if "finish" in only else None
+    return _as_finish(meant, url, only) if meant else None
 
 
 def _as_finish(meant: tuple[str, list[str]], url: str, only: set[str]) -> dict:
@@ -944,6 +977,12 @@ def execute(state: AgentState, config) -> dict:
             res.text += (f" (You already read this whole page's text at step {n}: scrolling does not show you more "
                          "of it. Scroll only to reach an element you will click or to load more items; otherwise "
                          "use what you read: note it and finish or act.)")
+    if name == "click" and res.ok and REMOVED.search(res.text):
+        # Live amazon.eg, 25 Nov: the kettle was removed at step 3; the agent then took the "you may also like" list
+        # on the cart page for cart items and looked for their delete buttons for 37 steps.
+        res.text += (" The item was removed. Check what is left in the cart by its count or subtotal (0 = empty). "
+                     "Lists like 'You may also like', 'Customers also bought', 'قد يعجبك أيضًا' are suggestions, "
+                     "NOT in the cart. If the cart is empty or the task is done, finish now.")
     if name == "type" and ctx.snap and args.ref in ctx.snap.refs:
         out["last_typed"] = ctx.snap.refs[args.ref]
     if res.groups:
@@ -1174,6 +1213,10 @@ def check(state: AgentState, config) -> dict:
     if not ok and _claims_unseen_action(state, str(data.get("problem") or "")):
         log.info("Checker claimed an action no step shows; ignored: %s", data.get("problem"))
         data, ok = {"ok": True}, True
+    if ok and not unchecked:
+        wrong = _owner_problem(ctx, state)
+        if wrong:
+            data, ok = {"ok": False, "fix": "work", "problem": wrong}, False
     checks = state.get("checks", 0) + 1
     out: dict[str, Any] = {"checks": checks}
     out.update(_record(ctx, state, {"tool": "check", "args": {}, "why": "Check the answer against what was seen",
@@ -1204,6 +1247,59 @@ def check(state: AgentState, config) -> dict:
                            "already happened (an item already in the cart, a form already sent).")
         out["answer"] = ""
     return out
+
+
+_NUMBER = re.compile(r"\d[\d,.\u066b\u066c ]*\d|\d")
+_AR_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+
+
+def _number_keys(text: str) -> list[tuple[str, int]]:
+    """(digits only, position) of the numbers in a text; Arabic digits read as 0-9."""
+    text = (text or "").translate(_AR_DIGITS)
+    return [(re.sub(r"\D", "", m.group(0)), m.start()) for m in _NUMBER.finditer(text)]
+
+
+def _owner_evidence(state: AgentState, limit: int = 6) -> list[str]:
+    """The lines of evidence (notes, step results) holding a number that is also in the answer. Live Wikipedia run,
+    25 Nov: the note said "population of Jordan 11,734,000", the answer gave it as Amman's, and the main checker
+    (a long input) passed it; asked about these lines alone, it caught it every time."""
+    keys = {k for k, _ in _number_keys(state.get("answer") or "")
+            if len(k) >= 3 and not (len(k) == 4 and 1900 <= int(k) <= 2100)}   # not years
+    if not keys:
+        return []
+    # Each line names its page, readable: live run 25 Nov, extract wrote "population (2024) | 11,734,000" with no
+    # owner, and only the page (the article about Jordan, %D8%A7... in the address) said whose it was.
+    texts = [(str(n.get("fact") or ""), str(n.get("source") or "")) for n in state.get("notes") or []]
+    texts += [(str(s.get("result") or ""), str(s.get("url") or "")) for s in state.get("steps") or []
+              if s.get("tool") in ("extract", "read_page", "find_in_page", "read_table", "look", "note")]
+    out: list[str] = []
+    for text, page in texts:
+        plain = text.translate(_AR_DIGITS)
+        where = f"[on the page {unquote(page)[:120]}] " if page.startswith("http") else ""
+        for k, pos in _number_keys(text):
+            if any(k == key or k.startswith(key) for key in keys):
+                bit = where + re.sub(r"\s+", " ", plain[max(0, pos - 160): pos + 80]).strip()
+                if bit not in out:
+                    out.append(bit)
+                if len(out) >= limit:
+                    return out
+    return out
+
+
+def _owner_problem(ctx: Ctx, state: AgentState) -> str:
+    """A short, focused second check: is each number given for the thing the evidence says it belongs to?"""
+    lines = _owner_evidence(state)
+    if not lines:
+        return ""
+    user = (f"TASK: {state.get('task', '')}\n\nANSWER: {state.get('answer') or ''}\n\nEVIDENCE:\n" +
+            "\n".join(f"- {line}" for line in lines))
+    data = _chat_json(ctx, prompts.OWNER, user, max_tokens=1200)
+    if data.get("ok") is not False:
+        return ""
+    problem = str(data.get("problem") or "a number is given for another thing than the evidence says").strip()
+    log.info("Owner check: %s", problem)
+    return (problem.rstrip(".") + ". Find the value for the thing the task asks about (often on its own page), or "
+            "say in the answer whose number it is.")
 
 
 def learn(state: AgentState, config) -> dict:

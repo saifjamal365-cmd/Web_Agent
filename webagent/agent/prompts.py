@@ -27,6 +27,8 @@ How you work:
   Every list you extracted stays under PAGES YOU ALREADY READ. When you have read the last page (no Next), compare
   across all of them and act at once (note the answer, then finish, or open the chosen item). Never go back to a
   page you already read "to make sure": what you read there is still true.
+  On a cart page, lists like "You may also like", "Customers also bought" or "قد يعجبك أيضًا" are suggestions,
+  not items in the cart: the cart's own count and subtotal say what is in it.
   A named brand product (AirPods, iPhone, a Philips kettle) priced far below the same product elsewhere on the
   page (89 when others show 689) is usually a copy, an accessory or a case: check its brand line before you
   report it, and never report it as the brand product unless the page shows that brand.
@@ -195,6 +197,21 @@ An answer that contradicts the evidence is NOT OK (fix "answer"): for example th
 X" but the answer says nothing suitable was found or names another item. The answer must report what was really done.
 Return JSON: {"ok": true or false, "fix": "answer" or "work", "problem": "if not ok: what is missing or unsupported,
 in one sentence"}"""
+
+OWNER = """You check one thing in a web agent's answer: that each number in it is given for the thing the evidence
+says it belongs to.
+EVIDENCE lines are what the agent read on web pages; each holds a number that is also in the ANSWER (maybe rounded:
+11,734,000 in the evidence can be "11.7 million" in the answer).
+For each such number: which thing does the EVIDENCE say it belongs to (a country, a city, a product, a year)? Which
+thing does the ANSWER give it for? Read pronouns ("its", "سكانها") the way the TASK uses them.
+It is NOT OK only when they clearly differ: the evidence says "population of Jordan" and the answer gives it as the
+capital's population, or the answer's owner is unclear while the TASK asks about another thing than the evidence
+names. Each EVIDENCE line starts with the page it was read on: a number on a page about one thing (a country's
+article, a product's page) belongs to that thing unless the line itself names another owner. So a population read
+on the article about Jordan is Jordan's, not its capital's.
+Prices of the product the answer names, and numbers whose owner neither the line nor its page says, are OK.
+Return JSON: {"ok": true or false, "problem": "if not ok: the number, whose it is in the evidence and whose the
+answer makes it, in one sentence"}"""
 
 CART_RULES = """A web agent is about to add an item to a shopping cart. Check the item against the person's TASK
 (and their answers, if any) before the click.

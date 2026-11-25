@@ -952,6 +952,8 @@ def test_an_answer_the_model_wrote_as_text_is_found():
                                '4.8 million【https://ar.wikipedia.org/wiki/عمان】."}')
     assert a.startswith("The capital of Jordan is عمّان") and "**" not in a and "【" not in a
     assert src == ["https://ar.wikipedia.org/wiki/عمان"]
+    a, _ = _answer_from_text('{ "answer": "السلة الآن فارغة؛ العنوان \\"فارغة\\" ظاهر", "sources": []}')
+    assert a == 'السلة الآن فارغة؛ العنوان "فارغة" ظاهر'                      # bare {"answer": ...}, no tool name
     a, _ = _answer_from_text("**الإجابة:**   - عاصمة الأردن هي **عمان**، ويبلغ عدد سكانها نحو 4.8 مليون.")
     assert a.startswith("- عاصمة الأردن هي عمان")
     for not_answer in ("I will click the search button now.", "سأبحث عن الصفحة أولا ثم أقرأها", '{"ref": "e5"}',
@@ -1057,3 +1059,65 @@ def test_page_numbers_and_products_that_differ_by_a_number_are_never_merged():
     for name in ("\"2\"", "\"3\"", "\"4\"", "ThinkPad T14\"", "ThinkPad T490", "ThinkPad T470"):
         assert name in snap.text
     assert snap.text.count("SAR 10") == 2                                   # price links collapse
+
+
+def test_numbers_in_the_answer_bring_their_evidence_lines():
+    # live Wikipedia run, 25 Nov: Jordan's population was given as Amman's
+    from webagent.agent.graph import _owner_evidence
+    st = {"answer": "عاصمة الأردن هي عمان، ويقدر عدد سكانها بحوالي 11.7 مليون نسمة (تقدير 2024).",
+          "notes": [{"fact": "عاصمة الأردن هي عمّان"}, {"fact": "عدد سكان الأردن (تقريباً) هو 11,734,000 (تقدير 2024)"}],
+          "steps": []}
+    lines = _owner_evidence(st)
+    assert len(lines) == 1 and "عدد سكان الأردن" in lines[0] and "11,734,000" in lines[0]
+    assert _owner_evidence({**st, "answer": "عمان (تقدير 2024)"}) == []           # a year alone is not checked
+    ar = {**st, "answer": "السعر ١٬٧٩٧٫٠٠ جنيه", "notes": [{"fact": "غلاية فيليبس 1,797.00 جنيه"}]}
+    assert _owner_evidence(ar)                                                       # Arabic digits match too
+
+
+def test_a_refused_call_to_a_tool_not_offered_is_rebuilt():
+    from webagent.agent.graph import _rescue
+    out = _rescue('to=functions.read_page {"part": 1}', {"note", "finish", "give_up"}, "https://shop.test/")
+    assert out["pending"]["name"] == "read_page" and out["pending"]["args"] == {"part": 1}
+    assert _rescue("", {"finish"}, "u") is None
+    assert _rescue("I will now open the cart page.", {"finish", "click"}, "u") is None
+
+
+def test_a_rate_limit_waits_as_long_as_groq_asks(monkeypatch):
+    # live run 25 Nov: two tasks failed after ~30 s of 2-5 s waits while the per-minute limit needed longer
+    import webagent.llm as L
+    slept = []
+    monkeypatch.setattr(L.time, "sleep", lambda s: slept.append(s))
+
+    class Limited(Exception):
+        status_code = 429
+
+        def __init__(self, msg):
+            super().__init__(msg)
+
+    class Completions:
+        fails, msg, calls = 0, "", 0
+
+        def create(self, **kw):
+            Completions.calls += 1
+            if Completions.calls <= Completions.fails:
+                raise Limited(Completions.msg)
+            msg = type("M", (), {"content": "ok", "tool_calls": None})()
+            return type("R", (), {"choices": [type("Ch", (), {"message": msg, "finish_reason": "stop"})()],
+                                  "usage": type("U", (), {"total_tokens": 5})()})()
+
+    llm = L.GroqLLM(api_key="test-key")
+    llm.client = type("C", (), {"chat": type("Ch", (), {"completions": Completions()})()})()
+    Completions.fails, Completions.msg = 6, "Rate limit reached. Please try again in 1m2.5s."
+    assert llm.chat([{"role": "user", "content": "x"}]).text == "ok"        # 6 limits, then it works
+    assert slept and all(s == 63.0 for s in slept)
+    slept.clear(); Completions.calls, Completions.fails, Completions.msg = 0, 99, "Limit on tokens per day: try again in 2h3m10s"
+    with pytest.raises(L.LLMError, match="rate limit"):
+        llm.chat([{"role": "user", "content": "x"}])
+    assert Completions.calls == 1 and not slept                           # a daily limit: no long wait inside the task
+
+
+def test_a_removed_item_message_is_recognised():
+    from webagent.agent.graph import REMOVED
+    assert REMOVED.search("غلاية مجموعة اسينشال... تم حذفه من عربة التسوق.")
+    assert REMOVED.search("Philips Kettle was removed from Shopping Cart.")
+    assert not REMOVED.search("Added to Cart") and not REMOVED.search("أضف إلى عربة التسوق")

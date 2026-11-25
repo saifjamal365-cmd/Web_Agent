@@ -23,6 +23,7 @@ SESSIONS = Path(os.environ.get("WA_SESSIONS_DIR") or DATA / "sessions")  # saved
 BLOCKED_EXT = {".exe", ".msi", ".bat", ".cmd", ".com", ".scr", ".ps1", ".vbs", ".js", ".jse", ".wsf", ".hta",
                ".jar", ".dll", ".sys", ".lnk", ".reg", ".apk", ".app", ".dmg", ".pkg", ".deb", ".rpm", ".sh"}
 TEXT_EXT = {".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html", ".htm", ".log", ".yaml", ".yml", ".ini"}
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
 PART = 6000
 
 
@@ -50,6 +51,10 @@ def unique_path(folder: Path, name: str) -> Path:
         n += 1
         p = folder / f"{stem} ({n}){suffix}"
     return p
+
+
+def is_image(name: str | Path) -> bool:
+    return Path(str(name)).suffix.lower() in IMAGE_EXT
 
 
 def blocked(name: str) -> bool:
@@ -140,7 +145,8 @@ def extract_text(path: Path) -> str:
         return re.sub(r"[ \t]+", " ", re.sub(r"<[^>]+>", " ", raw)).strip()
     if ext in TEXT_EXT or not ext:
         return path.read_text(encoding="utf-8", errors="replace")
-    raise FileError(f"Cannot read {path.suffix} files. Readable: PDF, Word (.docx), Excel (.xlsx), CSV and text.")
+    raise FileError(f"Cannot read {path.suffix} files. Readable: PDF, Word (.docx), Excel (.xlsx), CSV, text and "
+                    "images (png, jpg, webp...).")
 
 
 def read_part(path: Path, part: int = 1) -> str:

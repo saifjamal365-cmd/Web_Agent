@@ -137,9 +137,11 @@ class Extract(BaseModel):
 
 
 class Look(BaseModel):
-    """Look at a screenshot of the page with a vision model. Use only when the text list is not enough
-    (images, charts, icons, canvas, the visual layout)."""
+    """Look with a vision model at a screenshot of the page, or at an image file the person gave you (file=).
+    Use on the page only when the text list is not enough (images, charts, icons, canvas, the visual layout)."""
     question: str
+    file: str = Field(default="", description="An image file from list_files (png, jpg, webp...) to look at "
+                                              "instead of the page")
     why: str = WHY
 
 
@@ -177,8 +179,9 @@ class ListFiles(BaseModel):
 
 
 class ReadFile(BaseModel):
-    """Read a file: PDF, Word (.docx), Excel (.xlsx), CSV or text. Give a file name from list_files, or the
-    address of a file on the web (for example a PDF link) to download and read it."""
+    """Read a file: PDF, Word (.docx), Excel (.xlsx), CSV, text, or an image (its text and what it shows, read by
+    a vision model). Give a file name from list_files, or the address of a file on the web (for example a PDF
+    link) to download and read it."""
     file: str = Field(default="", description="File name from list_files")
     url: str = Field(default="", description="Or: the web address of the file")
     part: int = Field(default=1, description="Part number for long files, starting at 1")
@@ -892,7 +895,14 @@ def run(name: str, args: BaseModel, browser: BrowserSession, llm: LLM, snap: Sna
             items = F.list_files(env.task_id)
             if not items:
                 return ToolResult("No files yet. The person can add files in the dashboard; downloads appear here.")
-            return ToolResult("Files: " + "; ".join(f"{i['name']} ({i['where']}, {F.human_size(i['size'])})" for i in items))
+            out = "Files: " + "; ".join(f"{i['name']} ({i['where']}, {F.human_size(i['size'])}"
+                                        f"{', image' if F.is_image(i['name']) else ''})" for i in items)
+            if any(F.is_image(i["name"]) for i in items):
+                # Live 25 Nov: the agent called look (a screenshot of the empty browser tab) for an uploaded PNG and
+                # reported the image as blank, twice.
+                out += ("\nTo see an image file, call look with file=\"<its name>\" (or read_file for all its text). "
+                        "Plain look only sees the browser page, not your files.")
+            return ToolResult(out)
         if name == "read_file":
             if args.url:
                 path = browser.fetch_file(args.url)
@@ -900,6 +910,9 @@ def run(name: str, args: BaseModel, browser: BrowserSession, llm: LLM, snap: Sna
                 path = F.resolve(args.file, env.task_id)
             else:
                 return ToolResult("Give a file name (see list_files) or a url.", ok=False)
+            if F.is_image(path):
+                text, tokens = vision.look_file(llm, path, vision.READ_ALL)
+                return ToolResult(f"Image {path.name}, read by the vision model:\n{text}", tokens=tokens)
             return ToolResult(F.read_part(path, args.part))
         if name == "login":
             dom = safety.domain_of(args.site)
@@ -946,6 +959,16 @@ def run(name: str, args: BaseModel, browser: BrowserSession, llm: LLM, snap: Sna
         if name == "extract":
             return _extract(browser, llm, args.question, drawn_hint, env.task)
         if name == "look":
+            if args.file:
+                path = F.resolve(args.file, env.task_id)
+                if not F.is_image(path):
+                    return ToolResult(f"{path.name} is not an image: read it with read_file.", ok=False)
+                text, tokens = vision.look_file(llm, path, args.question)
+                return ToolResult(f"Vision (the file {path.name}): " + text, tokens=tokens)
+            if browser.live_source is None and browser.url in ("", "about:blank"):
+                return ToolResult("The browser has no page open (about:blank): there is nothing to look at. To see an "
+                                  "image file the person gave you, call look with file=\"<its name>\" (see list_files).",
+                                  ok=False)
             text, tokens = vision.look(llm, browser.screenshot(), args.question)
             return ToolResult("Vision: " + text, tokens=tokens)
         if name == "more_tools":

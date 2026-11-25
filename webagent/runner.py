@@ -18,6 +18,22 @@ from webagent.store import db
 log = logging.getLogger(__name__)
 
 
+def earlier_turns(conversation_id: str, task_id: str) -> list[dict]:
+    """Earlier questions and answers in the same chat, each with the files it used, so a follow-up such as "is
+    there any text in it?" knows which file "it" is (live 25 Nov: the agent asked for a URL instead)."""
+    out = []
+    for h in db.conversation_history(conversation_id, task_id):
+        answer = h.get("answer") or ""
+        used = list(dict.fromkeys(str((s.get("args") or {}).get("file") or "").strip()
+                                  for s in db.get_steps(h["id"])
+                                  if s.get("tool") in ("look", "read_file", "upload_file"))) if h.get("id") else []
+        used = [u for u in used if u]
+        if used:
+            answer += f"\n  (files used: {', '.join(used[:5])})"
+        out.append({"request": h["request"], "answer": answer})
+    return out
+
+
 def default_browser(task_id: str) -> BrowserSession:
     cdp = None
     if settings.agent_edge:
@@ -170,8 +186,7 @@ def run_task(task_id: str, *, resume: bool = False, llm: LLM | None = None,
                     ctx.resume_key = (last["action"] or {}).get("key", "")
         else:
             cmd = {"task_id": task_id, "task": task["request"], "start_url": task.get("start_url") or "",
-                   "history": [{"request": h["request"], "answer": h["answer"]}
-                               for h in db.conversation_history(task["conversation_id"], task_id)]}
+                   "history": earlier_turns(task["conversation_id"], task_id)}
         result: dict = {}
         with tracing.task_trace(task_id, task["request"]):
             while True:

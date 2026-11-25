@@ -1121,3 +1121,95 @@ def test_a_removed_item_message_is_recognised():
     assert REMOVED.search("غلاية مجموعة اسينشال... تم حذفه من عربة التسوق.")
     assert REMOVED.search("Philips Kettle was removed from Shopping Cart.")
     assert not REMOVED.search("Added to Cart") and not REMOVED.search("أضف إلى عربة التسوق")
+
+
+# ---------------------------------------------------------------- image files (live 25 Nov: an uploaded PNG read as "blank")
+
+class _VisionLLM:
+    """Records what the vision model was sent and answers with a fixed text."""
+    def __init__(self, text="A cheat sheet titled Agent 2 Agent"):
+        self.sent, self.text = [], text
+
+    def chat(self, messages, **kw):
+        from webagent.llm import Reply
+        self.sent.append((messages, kw))
+        return Reply(text=self.text, tokens=42)
+
+
+class _BlankBrowser:
+    """A browser with no page open: a screenshot must not be taken."""
+    live_source = None
+    url = "about:blank"
+
+    def screenshot(self):
+        raise AssertionError("look must not screenshot an empty tab")
+
+
+def _png(path, mode="RGBA", color=(0, 0, 0, 0), size=(60, 40)):
+    from PIL import Image
+    Image.new(mode, size, color).save(path)
+    return path
+
+
+def test_transparent_image_is_put_on_white_for_the_model(tmp_path):
+    import io
+    from PIL import Image
+    from webagent.agent import vision
+    data = vision.image_for_model(_png(tmp_path / "t.png"))
+    im = Image.open(io.BytesIO(data))
+    assert im.format == "JPEG" and im.mode == "RGB"
+    assert min(im.getpixel((5, 5))) > 240   # transparent -> white, not black
+    big = vision.image_for_model(_png(tmp_path / "big.png", "RGB", (10, 20, 30), (4000, 3000)))
+    w, h = Image.open(io.BytesIO(big)).size
+    assert w * h <= vision.MAX_PIXELS and abs(w / h - 4 / 3) < 0.01
+
+
+def test_look_and_read_file_send_the_image_file_itself():
+    from webagent import files as F
+    name = "sheet-" + uuid.uuid4().hex[:6] + ".png"
+    _png(F.unique_path(F.INBOX, name), "RGB", (200, 200, 200))
+    llm, env = _VisionLLM(), T.Env(task_id="t-img")
+    listed = T.run("list_files", T.validate("list_files", {}), _BlankBrowser(), llm, None, env=env).text
+    assert f"{name} (inbox" in listed and "image)" in listed and 'look with file=' in listed
+    res = T.run("look", T.validate("look", {"question": "what is it?", "file": name}), _BlankBrowser(), llm, None, env=env)
+    assert res.ok and "Agent 2 Agent" in res.text and res.tokens == 42
+    content = llm.sent[-1][0][0]["content"]
+    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,") and "image file" in content[0]["text"]
+    read = T.run("read_file", T.validate("read_file", {"file": name}), _BlankBrowser(), llm, None, env=env)
+    assert read.ok and read.text.startswith(f"Image {name}") and "ALL the text" in llm.sent[-1][0][0]["content"][0]["text"]
+
+
+def test_look_at_an_empty_tab_says_so_instead_of_blank():
+    res = T.run("look", T.validate("look", {"question": "what is in the image?"}), _BlankBrowser(), _VisionLLM(), None,
+                env=T.Env(task_id="t-img"))
+    assert not res.ok and "about:blank" in res.text and "file=" in res.text
+
+
+def test_answer_about_an_image_needs_a_look_at_that_file():
+    from webagent.agent.graph import _code_check
+    listed = {"tool": "list_files", "args": {}, "result": "Files: Agent_2_Agent_Sheet_chhet.png (inbox, 530.0 KB, image)"}
+    blank = {"tool": "look", "args": {"question": "What is in Agent_2_Agent_Sheet_chhet.png?"}, "result": "Vision: blank"}
+    state = {"task": "check this image", "answer": "The image is completely blank.", "steps": [listed, blank]}
+    problem, _ = _code_check(state)
+    assert problem.get("ok") is False and 'file="Agent_2_Agent_Sheet_chhet.png"' in problem["problem"]
+    seen = {"tool": "look", "args": {"question": "q", "file": "Agent_2_Agent_Sheet_chhet.png"}, "result": "Vision: ..."}
+    assert _code_check({**state, "steps": [listed, blank, seen]}) == ({}, {})
+    # files that are not images, or tasks that are not about them, are not held up
+    pdf = {**listed, "result": "Files: cv.pdf (inbox, 20 KB)"}
+    assert _code_check({**state, "steps": [pdf, blank]}) == ({}, {})
+    # a follow-up answered from the earlier answer is sent to the file the earlier question used, not to the web
+    follow = {"task": "لا يوجد فيها اي محتوى كلامي؟", "answer": "الصورة تحتوي على نصوص كثيرة", "steps": [],
+              "history": [{"request": "check this image", "answer": "A cheat sheet.\n  (files used: sheet (2).png)"}]}
+    problem, _ = _code_check(follow)
+    assert problem.get("ok") is False and 'file="sheet (2).png"' in problem["problem"]
+
+
+def test_follow_up_history_names_the_files_used():
+    from webagent import runner
+    conv = uuid.uuid4().hex[:12]
+    t = db.create_task("check this image", conv)
+    db.add_step(t["id"], "execute", "look", {"question": "q", "file": "sheet.png"}, "", "Vision: a cheat sheet")
+    db.update_task(t["id"], status="done", answer="It is a cheat sheet.")
+    follow = db.create_task("لا يوجد فيها اي محتوى كلامي؟", conv)
+    turns = runner.earlier_turns(conv, follow["id"])
+    assert turns == [{"request": "check this image", "answer": "It is a cheat sheet.\n  (files used: sheet.png)"}]

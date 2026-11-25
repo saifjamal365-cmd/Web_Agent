@@ -33,7 +33,8 @@ log = logging.getLogger(__name__)
 RECENT_STEPS = 14
 # The last result of these tools is shown in full (the others are cut to 300 characters).
 # (Desktop tools are not here: the app window is shown as the current page instead.)
-FULL_RESULT = {"read_page", "find_in_page", "extract", "read_table", "read_file", "list_files", "delegate", "web_search"}
+FULL_RESULT = {"read_page", "find_in_page", "extract", "read_table", "read_file", "list_files", "delegate", "web_search",
+               "look"}
 MAX_CHECKS = 2
 MAX_REFLECTIONS = 3
 FINAL_STEPS = 5                              # the last steps are for writing the answer, not for browsing
@@ -142,6 +143,11 @@ def _domains_in(text: str) -> list[str]:
     found = re.findall(r"\b((?:[a-z0-9-]+\.)+(?:com|org|net|io|co|edu|gov|jo|uk|de|ai|dev|app|info|me|store|shop)"
                        r"(?:\.[a-z]{2})?)\b", (text or "").lower())
     return list(dict.fromkeys(safety.domain_of(d) for d in found))
+
+
+def _reads_file(step: dict) -> bool:
+    """A step that read one of the person's files: read_file, or look at an image file (not the page)."""
+    return step.get("tool") == "read_file" or (step.get("tool") == "look" and bool((step.get("args") or {}).get("file")))
 
 
 def _record(ctx: Ctx, state: AgentState, step: dict) -> dict:
@@ -372,7 +378,8 @@ def _render(state: AgentState, snap_text: str, max_steps: int | None = None) -> 
             parts.append("RECENT STEPS:\n" + "\n".join(lines))
     last = recent[-1] if recent else None
     if last and last.get("tool") in FULL_RESULT and last.get("ok"):
-        parts.append(f"LAST {last['tool']} RESULT (full):\n<page>\n" + (last.get("result") or "")[:6500] + "\n</page>")
+        whole = 12000 if _reads_file(last) else 6500   # all of a dense image's text (a cheat sheet: ~9k characters)
+        parts.append(f"LAST {last['tool']} RESULT (full):\n<page>\n" + (last.get("result") or "")[:whole] + "\n</page>")
     if state.get("feedback"):
         parts.append("IMPORTANT FEEDBACK: " + state["feedback"])
     used, limit = state.get("step_count", 0), max_steps or settings.max_steps
@@ -1086,6 +1093,35 @@ def _list_not_followed(state: AgentState) -> str:
     return open_list
 
 
+_IMAGE_NAME = re.compile(r"[\w\-. ()]+\.(?:png|jpe?g|webp|gif|bmp|tiff?)\b", re.I)
+
+
+def _image_not_seen(state: AgentState) -> str:
+    """An image file the person gave that the answer talks about, when no step sent that file to the vision model.
+    Live 25 Nov: look (a screenshot of the empty browser tab) said "blank", and the checker passed "the image is
+    completely blank" twice."""
+    steps = state.get("steps") or []
+    images = [m.group(0).strip() for s in steps if s.get("tool") == "list_files"
+              for m in _IMAGE_NAME.finditer(str(s.get("result") or ""))]
+    # ... or an image an earlier question in this chat used (a follow-up, live 25 Nov: answered from the earlier
+    # answer, was asked for evidence, and then searched the web for the cheat sheet instead of reading the file).
+    for h in state.get("history") or []:
+        used = re.search(r"\(files used: (.*)\)\s*$", str(h.get("answer") or ""))
+        if used:
+            images += [n.strip() for n in used.group(1).split(", ") if _IMAGE_NAME.fullmatch(n.strip())]
+    if not images:
+        return ""
+    seen = {str((s.get("args") or {}).get("file") or "").strip().lower() for s in steps
+            if s.get("tool") in ("look", "read_file") and s.get("ok", True)}
+    text = f"{state.get('task', '')} {state.get('answer') or ''}".lower()
+    about = [n for n in dict.fromkeys(images) if n.lower() in text or re.search(
+        r"\b(image|picture|photo|screenshot)\b|صور", text)]
+    for name in about:
+        if name.lower() not in seen:
+            return name
+    return ""
+
+
 def _code_check(state: AgentState) -> tuple[dict, dict]:
     """Checks in code before the model's check: (problem as the checker would return it, extra state)."""
     answer = state.get("answer") or ""
@@ -1098,6 +1134,12 @@ def _code_check(state: AgentState) -> tuple[dict, dict]:
                             "again (go_to its address to reload it), read its NEWEST part (the bottom of a chat, the top "
                             "of an inbox; 'Text in view now' shows the screen) and name the newest item you see with its "
                             "time and sender. Only then answer."}, {"second_look": True})
+    unseen = _image_not_seen(state)
+    if unseen:
+        return ({"ok": False, "fix": "work",
+                 "problem": f"The answer is about the image file {unseen}, but no step looked at that file: look without "
+                            "file= only sees the browser page. Call look with file=\"" + unseen + "\" (or read_file) "
+                            "and answer from what it shows."}, {})
     open_list = _list_not_followed(state)
     if open_list and WHOLE_LIST.search(f"{state.get('task', '')} {answer}") and not LIMITED.search(answer):
         return ({"ok": False, "fix": "work",
@@ -1192,8 +1234,12 @@ def check(state: AgentState, config) -> dict:
             out["feedback"] = f"Your answer was checked and is not ready: {code_problem['problem']}"
             out["answer"] = ""
         return out
-    results ="\n".join(f"{s['n']}. {s.get('tool')}: {(s.get('result') or '')[:700]}"
-                        for s in (state.get("steps") or [])[-14:] if s.get("tool") not in ("recall",))
+    shown = [s for s in (state.get("steps") or [])[-14:] if s.get("tool") not in ("recall",)]
+    # The newest reading of a file (an image read by the vision model, a PDF part) in full: live 25 Nov, a cheat
+    # sheet's text was cut at 700 characters here, and the checker called the rest of a right answer "not shown".
+    whole = next((s for s in reversed(shown) if s.get("ok", True) and _reads_file(s)), None)
+    results = "\n".join(f"{s['n']}. {s.get('tool')}: {(s.get('result') or '')[:12000 if s is whole else 700]}"
+                        for s in shown)
     try:
         page = _page_for_check(ctx.browser.snapshot().text)
     except Exception:

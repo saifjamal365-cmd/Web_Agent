@@ -22,6 +22,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 from webagent import files as F
+from webagent import tracing
 from webagent.agent import memory, prompts, safety
 from webagent.agent import tools as T
 from webagent.browser.session import GREW_MARK, SITE_BLOCKED, BrowserError, BrowserSession, Snapshot, _domain_match
@@ -167,7 +168,10 @@ def recall(state: AgentState, config) -> dict:
         domains.insert(0, safety.domain_of(state["start_url"]))
     lessons = [f"[{s['domain']}] {s['text']}" for s in memory.recall(state["task"], domains)]
     out: dict[str, Any] = {"lessons": lessons, "domains": domains, "started": time.time(), "status": "running",
-                           "tool_groups": sorted(set(state.get("tool_groups") or []) | T.task_groups(state["task"])),
+                           # a follow-up ("is there text in it?") gets the tools the earlier questions needed
+                           "tool_groups": sorted(set(state.get("tool_groups") or []) | T.task_groups(" ".join(
+                               [state["task"]] + [f"{h.get('request', '')} {h.get('answer', '')}"
+                                                  for h in state.get("history") or []]))),
                            "notes": state.get("notes") or [], "steps": state.get("steps") or [],
                            "step_count": state.get("step_count", 0), "checks": 0, "reflections": 0, "feedback": "",
                            "second_look": False}
@@ -968,7 +972,11 @@ def execute(state: AgentState, config) -> dict:
         return out
     if ctx.env is not None:
         ctx.env.task = state.get("task", "")
-    res = T.run(name, args, ctx.browser, ctx.llm, ctx.snap, ctx.search_url, env=ctx.env)
+    with tracing.span(f"tool · {name}", "TOOL", inputs=tracing.clip(args, 2000), who=name,
+                      attrs={"from": "execute", "to": name}) as sp:
+        res = T.run(name, args, ctx.browser, ctx.llm, ctx.snap, ctx.search_url, env=ctx.env)
+        sp.out({"ok": res.ok, "result": tracing.clip(res.text, 6000), "url": ctx.browser.url})
+        sp.attrs(ok=res.ok, tokens=res.tokens or 0, says=res.text[:200])
     if name == "login" and not res.ok:
         out["login_failed"] = (state.get("login_failed") or []) + [safety.domain_of(args.site)]
     if res.tokens:
@@ -1517,25 +1525,21 @@ def run_helpers(ctx: Ctx, state: AgentState, tasks: list[str]) -> tuple[str, lis
 
 def build_graph(checkpointer=None):
     g = StateGraph(AgentState)
-    g.add_node("recall", recall)
-    g.add_node("plan", plan)
-    g.add_node("decide", decide)
-    g.add_node("gate", gate)
-    g.add_node("execute", execute)
-    g.add_node("reflect", reflect)
-    g.add_node("check", check)
-    g.add_node("learn", learn)
-    g.add_node("give_up", give_up)
-    g.add_node("stop_rejected", stop_rejected)
+    # Each node and each hand-over is a span in the task's MLflow trace (webagent/tracing.py).
+    for name, fn in (("recall", recall), ("plan", plan), ("decide", decide), ("gate", gate), ("execute", execute),
+                     ("reflect", reflect), ("check", check), ("learn", learn), ("give_up", give_up),
+                     ("stop_rejected", stop_rejected)):
+        g.add_node(name, tracing.node(name, fn))
     g.add_edge(START, "recall")
     g.add_edge("recall", "plan")
     g.add_edge("plan", "decide")
-    g.add_conditional_edges("decide", after_decide, ["gate", "decide", "learn"])
+    g.add_conditional_edges("decide", tracing.route("decide", after_decide), ["gate", "decide", "learn"])
     g.add_edge("gate", "execute")
-    g.add_conditional_edges("execute", after_execute, ["check", "reflect", "decide", "learn", "give_up", "stop_rejected"])
+    g.add_conditional_edges("execute", tracing.route("execute", after_execute),
+                            ["check", "reflect", "decide", "learn", "give_up", "stop_rejected"])
     g.add_edge("reflect", "decide")
-    g.add_conditional_edges("check", after_check, ["learn", "decide"])
-    g.add_conditional_edges("give_up", after_give_up, ["check", "learn"])
+    g.add_conditional_edges("check", tracing.route("check", after_check), ["learn", "decide"])
+    g.add_conditional_edges("give_up", tracing.route("give_up", after_give_up), ["check", "learn"])
     g.add_edge("stop_rejected", "learn")
     g.add_edge("learn", END)
     return g.compile(checkpointer=checkpointer)

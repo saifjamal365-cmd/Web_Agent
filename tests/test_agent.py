@@ -1,4 +1,5 @@
 """End to end: the LangGraph agent with a scripted fake model drives the real browser on the test website."""
+import json
 import threading
 import time
 
@@ -275,3 +276,61 @@ def test_an_answer_written_as_text_is_treated_as_finish(site_url):
     t = db.create_task("What does the Aero Laptop cost on the test shop?", None, None)
     out = run_task(t["id"], llm=llm, poll=0.1)
     assert out["status"] == "done" and out["answer"].startswith("The Aero Laptop 14 costs 999.00 JOD"), out
+
+
+def test_mlflow_trace_shows_who_sent_what(site_url, tmp_path):
+    """One trace per task: each part of the agent (node), each hand-over (route), each tool, each model call
+    (named by who asked) and the person's answer is a span with what it got and what it sent on."""
+    import mlflow
+    from webagent import tracing
+    from webagent.llm import GroqLLM
+
+    class TracedFake(FakeLLM):   # the scripted model behind the real (traced) chat wrapper
+        model = "openai/gpt-oss-120b"
+        chat = GroqLLM.chat
+        _chat = FakeLLM.chat
+
+    llm = TracedFake([
+        ("go_to", {"url": site_url + "/product-laptop.html"}),
+        ("click", lambda page: {"ref": ref_for(page, "Buy now")}),
+        ("finish", {"answer": "Not bought: you said no."}),
+    ])
+    assert tracing.setup(uri=f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}", force=True)
+    try:
+        t = db.create_task("Buy the Aero Laptop", None, None)
+        _answer_when_asked(t["id"], {"approved": False, "note": "too expensive"})
+        out = run_task(t["id"], llm=llm, poll=0.1)
+        assert out["status"] == "done", out
+        flush = getattr(mlflow, "flush_trace_async_logging", None)
+        if flush:
+            flush()
+        exp = mlflow.get_experiment_by_name("web-agent")
+        traces = mlflow.search_traces(locations=[exp.experiment_id], return_type="list")
+        trace = next(tr for tr in traces if tr.info.tags.get("task_id") == t["id"])
+    finally:
+        tracing._enabled = False
+    spans = {s.name: s for s in trace.data.spans}
+    names = list(spans)
+    for want in (f"task {t['id']}", "recall · memory", "plan · planner (gpt-oss)", "decide · brain (gpt-oss)",
+                 "gate · safety gate (code)", "execute · hands (browser and tools)", "route: decide -> gate",
+                 "tool · go_to", "person -> agent", "LLM gpt-oss-120b <- decide",
+                 "LLM gpt-oss-120b <- plan"):
+        assert want in names, (want, names)
+    assert "tool · click" not in names   # the person said no: the click never reached the browser
+    # what each part sent on, in one line
+    decide = [s for s in trace.data.spans if s.name == "decide · brain (gpt-oss)"][0]
+    assert decide.attributes["says"].startswith("asks the gate to run go_to")
+    gates = [s.attributes["says"] for s in trace.data.spans if s.name == "gate · safety gate (code)"]
+    assert gates[0] == "allowed (no approval needed): run go_to"
+    assert any(g.startswith("the person said no") for g in gates), gates
+    person = spans["person -> agent"]
+    assert person.outputs["answer"]["approved"] is False and person.attributes["kind"] == "approval"
+    tool = spans["tool · go_to"]
+    assert tool.inputs["url"].endswith("/product-laptop.html") and tool.outputs["ok"] is True
+    # the model span holds the exact prompt it was sent and the tool call that came back
+    llm_span = [s for s in trace.data.spans if s.name == "LLM gpt-oss-120b <- decide"][0]   # the first call
+    assert "TASK: Buy the Aero Laptop" in json.dumps(llm_span.inputs, ensure_ascii=False)
+    assert llm_span.outputs["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "go_to"
+    # the outcome is on the trace
+    root = spans[f"task {t['id']}"]
+    assert root.outputs["status"] == "done" and "Not bought" in root.outputs["answer"]

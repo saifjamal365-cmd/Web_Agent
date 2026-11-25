@@ -127,8 +127,33 @@ class GroqLLM:
         self.model = model or settings.model
         self.retries = retries
 
-    def chat(self, messages, *, tools=None, tool_choice=None, json_mode=False, model=None, max_tokens=1500,
-             temperature=0.2, reasoning=None) -> Reply:
+    def chat(self, messages, **kw) -> Reply:
+        """One model call, traced: which part asked (decide, check, the look tool...), what it sent, what came back."""
+        from webagent import tracing
+
+        if not tracing.enabled():
+            return self._chat(messages, **kw)
+        model = kw.get("model") or self.model
+        short = model.split("/")[-1] + (" (vision)" if model == settings.vision_model else "")
+        caller = tracing.who() or "agent"
+        inputs = {"messages": tracing.messages_view(messages), "model": model,
+                  "tools offered": [t.get("function", {}).get("name") for t in kw.get("tools") or []],
+                  "json_mode": bool(kw.get("json_mode")), "max_tokens": kw.get("max_tokens", 1500)}
+        with tracing.span(f"LLM {short} <- {caller}", "CHAT_MODEL", inputs=inputs,
+                          attrs={"llm.model": model, "from": caller, "to": short}) as h:
+            reply = self._chat(messages, **kw)
+            calls = [{"id": c.id or f"call_{i}", "type": "function",
+                      "function": {"name": c.name, "arguments": json.dumps(c.args, ensure_ascii=False)}}
+                     for i, c in enumerate(reply.tool_calls)]
+            h.out({"choices": [{"index": 0, "finish_reason": "length" if reply.cut else "stop",
+                                "message": {"role": "assistant", "content": reply.text, **({"tool_calls": calls} if calls else {})}}],
+                   "usage": {"total_tokens": reply.tokens}})
+            said = (f"tool call {reply.tool_calls[0].name}" if reply.tool_calls else reply.text[:200].replace("\n", " "))
+            h.attrs(tokens=reply.tokens, says=said, cut=reply.cut)
+        return reply
+
+    def _chat(self, messages, *, tools=None, tool_choice=None, json_mode=False, model=None, max_tokens=1500,
+              temperature=0.2, reasoning=None) -> Reply:
         """reasoning: "low" / "medium" / "high" for gpt-oss (default medium). The hidden reasoning counts against
         max_tokens: with too little room the reply comes back empty (finish "length")."""
         kwargs: dict[str, Any] = {"model": model or self.model, "messages": messages, "temperature": temperature,

@@ -125,6 +125,21 @@ cd web-agent
 
 The Groq key is read from the `GROQ_API_KEY` environment variable (or the Windows user environment).
 
+### Reading a task in MLflow (Traces tab, experiment `web-agent`)
+
+Each task is one trace (tag `task_id`) that shows who sent what to whom:
+
+| Span | What it is |
+|---|---|
+| `plan · planner (gpt-oss)`, `decide · brain (gpt-oss)`, `check · checker (gpt-oss)` ... | a part of the agent: inputs = what it received, outputs = what it sent on, attribute `says` = the message in one line |
+| `route: decide -> gate` | a hand-over from one part to the next |
+| `gate · safety gate (code)` | allowed / refused / asks the person |
+| `person -> agent` | your answer or approval |
+| `tool · click`, `tool · look` ... | a browser or file action: arguments and result |
+| `LLM gpt-oss-120b <- decide`, `LLM qwen3.8-27b (vision) <- look` | one model call: the exact messages sent (images shown by size) and the reply, with tokens |
+
+`WA_TRACING=0` turns tracing off.
+
 Command line client: `.venv\Scripts\python scripts\ask.py "What is the latest Python version?"`
 (`--auto approve|reject` answers approvals by itself, `--reply "text"` answers a question).
 

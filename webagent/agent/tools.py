@@ -342,7 +342,9 @@ TASK_WORDS = {
     "forms": r"\bforms?\b|\bfill\b|apply|application|register|sign ?up|booking|\bbook (a|an|the)\b|survey|"
              r"contact (form|us)|subscribe|questionnaire",
     "files": r"\bfiles?\b|\bpdf\b|\bcsv\b|excel|xlsx|\.docx?\b|word document|download|upload|attach|\bcv\b|"
-             r"r[eé]sum[eé]|spreadsheet|invoice|brochure|manual|my documents?",
+             r"r[eé]sum[eé]|spreadsheet|invoice|brochure|manual|my documents?|"
+             # images the person gives (live 25 Nov: "check this image" got no list_files and asked for an upload)
+             r"\bimages?\b|\bpictures?\b|\bphotos?\b|screenshot|\.(png|jpe?g|webp|gif|bmp)\b|صور|ملف|مرفق",
     "login": r"log ?in|sign ?in|my account|my orders?|my profile|my inbox|my cart|my bookings?|portal",
     "helpers": r"compar|\beach of\b|several|multiple|\bvs\.?\b|versus|research",
     "gestures": r"spreadsheet|\bsheets?\b|excel|\bcells?\b|\bdrag|\bhover|keyboard|shortcut|\bkeys\b|editor|"

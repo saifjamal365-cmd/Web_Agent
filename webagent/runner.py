@@ -168,6 +168,7 @@ def run_task(task_id: str, *, resume: bool = False, llm: LLM | None = None,
         graph = build_graph(checkpointer())
         config = {"configurable": {"thread_id": task_id}, "recursion_limit": 1000}
         saved = graph.get_state(config)
+        resumed_with = None   # the person's answer given while the task was parked (shown on the trace)
         if resume and saved and saved.values:
             cmd = None  # continue from the last checkpoint
             log.info("Resuming task %s from its checkpoint", task_id)
@@ -182,13 +183,17 @@ def run_task(task_id: str, *, resume: bool = False, llm: LLM | None = None,
                 # The person answered while no worker held the task: continue with that answer.
                 waited = max(0.0, _epoch(last["decided_at"]) - _epoch(last["created_at"]))
                 cmd = Command(resume={**last["answer"], "waited": waited})
+                resumed_with = last
                 if last["kind"] == "approval":
                     ctx.resume_key = (last["action"] or {}).get("key", "")
         else:
             cmd = {"task_id": task_id, "task": task["request"], "start_url": task.get("start_url") or "",
                    "history": earlier_turns(task["conversation_id"], task_id)}
         result: dict = {}
-        with tracing.task_trace(task_id, task["request"]):
+        with tracing.task_trace(task_id, task["request"]) as trace:
+            if resumed_with:
+                tracing.person({"kind": resumed_with["kind"], "message": resumed_with.get("message")},
+                               resumed_with["answer"])
             while True:
                 result = graph.invoke(cmd, config)
                 intr = result.get("__interrupt__")
@@ -207,7 +212,9 @@ def run_task(task_id: str, *, resume: bool = False, llm: LLM | None = None,
                     result = {"status": "cancelled" if cancelled else "failed",
                               "answer": "Cancelled by the person." if cancelled else "No answer from the person in time."}
                     break
+                tracing.person(intr[0].value, answer)
                 cmd = Command(resume=answer)
+            tracing.task_done(trace, result)
 
         status = result.get("status") or "failed"
         if status == "running":

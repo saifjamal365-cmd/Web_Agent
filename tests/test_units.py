@@ -1213,3 +1213,9 @@ def test_follow_up_history_names_the_files_used():
     follow = db.create_task("لا يوجد فيها اي محتوى كلامي؟", conv)
     turns = runner.earlier_turns(conv, follow["id"])
     assert turns == [{"request": "check this image", "answer": "It is a cheat sheet.\n  (files used: sheet.png)"}]
+
+
+def test_image_words_and_follow_ups_get_the_file_tools():
+    for task in ("check this image", "what is in this picture?", "describe sheet.png", "ماذا يوجد في هذه الصورة؟"):
+        assert "files" in T.task_groups(task), task
+    assert "files" not in T.task_groups("price of the T14 on lenovo.com")

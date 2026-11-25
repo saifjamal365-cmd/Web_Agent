@@ -140,6 +140,22 @@ Each task is one trace (tag `task_id`) that shows who sent what to whom:
 
 `WA_TRACING=0` turns tracing off.
 
+### Evaluating traces and detecting issues
+
+The MLflow UI's "Run judges" and "Run issue detection" buttons need MLflow's job backend, which does not run on
+Windows. Run them from Python instead; the results land in the same UI:
+
+```powershell
+.venv\Scripts\python scripts\eval_traces.py               # last 20 tasks: checks + Groq judges + issue detection
+.venv\Scripts\python scripts\eval_traces.py --checks-only # free checks only, no model calls
+```
+
+- **Traces tab**: a pass/fail column per check with the reason. The free checks are in `webagent/trace_checks.py`:
+  task_finished, within_step_budget, no_loops, few_refusals, checker_accepted_first, valid_tool_calls, no_errors,
+  token_budget, fast_enough and looked_at_pictures. The Groq judges are relevance_to_query and answer_rules.
+- **Evaluation runs**: one run per evaluation, with each check's pass rate.
+- **Issues**: failing traces grouped by MLflow's issue detector (Groq), with severity and example traces.
+
 Command line client: `.venv\Scripts\python scripts\ask.py "What is the latest Python version?"`
 (`--auto approve|reject` answers approvals by itself, `--reply "text"` answers a question).
 

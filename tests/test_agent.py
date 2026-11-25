@@ -334,3 +334,10 @@ def test_mlflow_trace_shows_who_sent_what(site_url, tmp_path):
     # the outcome is on the trace
     root = spans[f"task {t['id']}"]
     assert root.outputs["status"] == "done" and "Not bought" in root.outputs["answer"]
+    # the issue checks read the same trace (scripts/eval_traces.py runs them through MLflow)
+    from webagent import trace_checks as C
+    assert C.is_agent_trace(trace)
+    verdict = {chk.name: chk(trace=trace) for chk in C.CHECKS}
+    assert verdict["task_finished"].value and verdict["within_step_budget"].value and verdict["no_loops"].value
+    assert verdict["looked_at_pictures"].value and "not about a picture" in verdict["looked_at_pictures"].rationale
+    assert verdict["no_errors"].value, verdict["no_errors"].rationale
